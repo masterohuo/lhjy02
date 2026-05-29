@@ -1,0 +1,9 @@
+__pycache__/
+*.pyc
+*.pyo
+models/*.pkl
+logs/
+results/
+*.db
+catboost_info/
+.DS_Store

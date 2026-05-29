@@ -1,0 +1,89 @@
+"""
+config.py - lhjy02 全局配置
+以散户为对手盘的中低频选股策略
+"""
+import os
+from pathlib import Path
+
+_current_dir = Path(__file__).resolve().parent
+
+# 目录配置
+DB_PATH = str(_current_dir.parent / "data" / "quant.db")
+MODELS_DIR = _current_dir / "models"
+LOGS_DIR = _current_dir / "logs"
+RESULTS_DIR = _current_dir / "results"
+
+for _d in [MODELS_DIR, LOGS_DIR, RESULTS_DIR]:
+    _d.mkdir(exist_ok=True)
+
+# 资金配置
+INITIAL_CASH = 500000
+MAX_POSITIONS = 10
+MAX_POS_PCT = 0.20           # 单只股票最大仓位 20%
+TOTAL_POS_PCT = 0.80          # 总仓位上限 80%
+
+# 交易参数
+REBALANCE_FREQ = "W-FRI"      # 每周五调仓
+SLIPPAGE = 0.002
+STOP_LOSS = -0.08             # 硬止损 -8%
+TAKE_PROFIT = None            # 不启用固定止盈
+COMMISSION_RATE = 0.0003
+STAMP_TAX = 0.001
+TOTAL_TRADE_COST = COMMISSION_RATE + STAMP_TAX
+
+# 选股参数
+TOP_N_STOCKS = 10
+MAX_STOCKS = 2000
+PREDICT_HORIZON = 5
+
+# 训练参数
+TRAIN_YEARS = 5
+VALIDATION_RATIO = 0.2
+
+# LightGBM 参数 (lambdarank)
+LGBM_PARAMS = {
+    "objective": "lambdarank",
+    "metric": "ndcg",
+    "n_estimators": 500,
+    "learning_rate": 0.03,
+    "num_leaves": 31,
+    "max_depth": 6,
+    "min_child_samples": 100,
+    "subsample": 0.7,
+    "colsample_bytree": 0.7,
+    "reg_alpha": 0.5,
+    "reg_lambda": 2.0,
+}
+
+# XGBoost 参数 (reg:squarederror)
+XGB_PARAMS = {
+    "objective": "reg:squarederror",
+    "max_depth": 8,
+    "learning_rate": 0.03,
+    "n_estimators": 500,
+    "subsample": 0.8,
+    "colsample_bytree": 0.8,
+    "reg_alpha": 0.1,
+    "reg_lambda": 1.0,
+}
+
+# CatBoost 参数 (YetiRank)
+CAT_PARAMS = {
+    "loss_function": "YetiRank",
+    "iterations": 500,
+    "depth": 8,
+    "learning_rate": 0.05,
+    "l2_leaf_reg": 5.0,
+    "early_stopping_rounds": 50,
+}
+
+# QMT 配置
+QMT_CONFIG = {
+    "ip": "127.0.0.1",
+    "port": 5861,
+    "mini_mode": True,
+    "account_id": os.environ.get("QMT_ACCOUNT_ID", ""),
+}
+
+# 日志
+LOG_LEVEL = "INFO"
