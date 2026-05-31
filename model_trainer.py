@@ -88,17 +88,37 @@ class TriModelTrainer:
 
         return X, y, meta, feature_cols
 
+    @staticmethod
+    def _cpu_params(params, gpu_keys):
+        """Return a copy of params with GPU-related keys removed."""
+        return {k: v for k, v in params.items() if k not in gpu_keys}
+
     def train_lightgbm(self, X_train, y_train, X_val, y_val, feature_names):
         """Train LightGBM regressor with early stopping on validation set."""
-        params = {k: v for k, v in LGBM_PARAMS.items() if k != "n_estimators"}
+        # 过滤掉 n_estimators 和任何 ranking 相关参数（LGBMRegressor 不支持）
+        _ranking_keys = {"objective", "metric", "eval_at"}
+        params = {k: v for k, v in LGBM_PARAMS.items()
+                  if k not in ("n_estimators",) and k not in _ranking_keys}
         n_estimators = LGBM_PARAMS.get("n_estimators", 1000)
-
-        self.lgb_model = lgb.LGBMRegressor(**params, n_estimators=n_estimators, verbose=-1)
-        self.lgb_model.fit(
-            X_train[feature_names], y_train,
-            eval_set=[(X_val[feature_names], y_val)],
-            callbacks=[lgb.early_stopping(50), lgb.log_evaluation(0)],
+        # 强制使用回归目标
+        self.lgb_model = lgb.LGBMRegressor(
+            objective="regression", metric="rmse",
+            **params, n_estimators=n_estimators, verbose=-1,
         )
+            self.lgb_model.fit(
+                X_train[feature_names], y_train,
+                eval_set=[(X_val[feature_names], y_val)],
+                callbacks=[lgb.early_stopping(50), lgb.log_evaluation(0)],
+            )
+        except lgb.basic.LightGBMError:
+            logger.info("LightGBM GPU不可用，回退到CPU...")
+            cpu_params = self._cpu_params(params, {"device", "gpu_platform_id", "gpu_device_id"})
+            self.lgb_model = lgb.LGBMRegressor(**cpu_params, n_estimators=n_estimators, verbose=-1)
+            self.lgb_model.fit(
+                X_train[feature_names], y_train,
+                eval_set=[(X_val[feature_names], y_val)],
+                callbacks=[lgb.early_stopping(50), lgb.log_evaluation(0)],
+            )
 
         with open(MODELS_DIR / "lgb_model.pkl", "wb") as f:
             pickle.dump(self.lgb_model, f)
@@ -110,13 +130,25 @@ class TriModelTrainer:
         params = {k: v for k, v in XGB_PARAMS.items() if k not in ("n_estimators",)}
         n_estimators = XGB_PARAMS.get("n_estimators", 1000)
 
-        self.xgb_model = XGBRegressor(**params, n_estimators=n_estimators,
-                                       early_stopping_rounds=50, verbosity=0)
-        self.xgb_model.fit(
-            X_train[feature_names], y_train,
-            eval_set=[(X_val[feature_names], y_val)],
-            verbose=False,
-        )
+        try:
+            self.xgb_model = XGBRegressor(**params, n_estimators=n_estimators,
+                                           early_stopping_rounds=50, verbosity=0)
+            self.xgb_model.fit(
+                X_train[feature_names], y_train,
+                eval_set=[(X_val[feature_names], y_val)],
+                verbose=False,
+            )
+        except Exception:
+            logger.info("XGBoost GPU不可用，回退到CPU (hist)...")
+            cpu_params = self._cpu_params(params, {"tree_method", "gpu_id"})
+            cpu_params["tree_method"] = "hist"
+            self.xgb_model = XGBRegressor(**cpu_params, n_estimators=n_estimators,
+                                           early_stopping_rounds=50, verbosity=0)
+            self.xgb_model.fit(
+                X_train[feature_names], y_train,
+                eval_set=[(X_val[feature_names], y_val)],
+                verbose=False,
+            )
 
         with open(MODELS_DIR / "xgb_model.pkl", "wb") as f:
             pickle.dump(self.xgb_model, f)
@@ -133,13 +165,24 @@ class TriModelTrainer:
         train_pool = Pool(X_train[feature_names], y_train)
         val_pool = Pool(X_val[feature_names], y_val)
 
-        self.cat_model = CatBoostRegressor(**params, iterations=iterations, verbose=0)
-        self.cat_model.fit(
-            train_pool,
-            eval_set=val_pool,
-            early_stopping_rounds=early_stopping_rounds,
-            verbose=False,
-        )
+        try:
+            self.cat_model = CatBoostRegressor(**params, iterations=iterations, verbose=0)
+            self.cat_model.fit(
+                train_pool,
+                eval_set=val_pool,
+                early_stopping_rounds=early_stopping_rounds,
+                verbose=False,
+            )
+        except Exception:
+            logger.info("CatBoost GPU不可用，回退到CPU...")
+            cpu_params = self._cpu_params(params, {"task_type", "devices"})
+            self.cat_model = CatBoostRegressor(**cpu_params, iterations=iterations, verbose=0)
+            self.cat_model.fit(
+                train_pool,
+                eval_set=val_pool,
+                early_stopping_rounds=early_stopping_rounds,
+                verbose=False,
+            )
 
         with open(MODELS_DIR / "cat_model.pkl", "wb") as f:
             pickle.dump(self.cat_model, f)
@@ -174,21 +217,26 @@ class TriModelTrainer:
         models["lgb"] = self.train_lightgbm(
             X_train, y_train, X_val, y_val, feature_names
         )
-        lgb_iters = getattr(models["lgb"], 'n_iterations_', models["lgb"].n_estimators)
+        best = getattr(models["lgb"], 'best_iteration_', None)
+        lgb_iters = best + 1 if best is not None else getattr(models["lgb"], 'n_iterations_', models["lgb"].n_estimators)
         logger.info("✅ LightGBM 训练完成, 迭代次数: %d", lgb_iters)
 
         logger.info("训练 XGBoost (reg:squarederror)...")
         models["xgb"] = self.train_xgboost(
             X_train, y_train, X_val, y_val, feature_names
         )
-        xgb_iters = getattr(models["xgb"], 'best_iteration', models["xgb"].n_estimators)
+        best = getattr(models["xgb"], 'best_iteration', None)
+        xgb_iters = best + 1 if best is not None else models["xgb"].n_estimators
         logger.info("✅ XGBoost 训练完成, 迭代次数: %d", xgb_iters)
 
         logger.info("训练 CatBoost (RMSE)...")
         models["cat"] = self.train_catboost(
             X_train, y_train, X_val, y_val, feature_names
         )
-        cat_iters = getattr(models["cat"], 'best_iteration_', getattr(models["cat"], 'iteration_count_', 0))
+        if hasattr(models["cat"], 'get_best_iteration'):
+            cat_iters = models["cat"].get_best_iteration() + 1
+        else:
+            cat_iters = getattr(models["cat"], 'tree_count_', 0)
         logger.info("✅ CatBoost 训练完成, 迭代次数: %d", cat_iters)
 
         return models
