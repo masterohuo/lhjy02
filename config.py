@@ -40,11 +40,13 @@ PREDICT_HORIZON = 5
 TRAIN_YEARS = 5
 VALIDATION_RATIO = 0.2
 
-# LightGBM 参数 (lambdarank)
+# LightGBM 参数 (回归预测收益率)
+# 注意: objective 必须为 regression 类目标 (如 regression/rmse/mae/mse)，
+# 不能使用 lambdarank 等 ranking 目标，否则 LGBMRegressor 会崩溃。
 LGBM_PARAMS = {
-    "objective": "lambdarank",
-    "metric": "ndcg",
-    "n_estimators": 500,
+    "objective": "regression",
+    "metric": "rmse",
+    "n_estimators": 1000,
     "learning_rate": 0.03,
     "num_leaves": 31,
     "max_depth": 6,
@@ -53,28 +55,35 @@ LGBM_PARAMS = {
     "colsample_bytree": 0.7,
     "reg_alpha": 0.5,
     "reg_lambda": 2.0,
+    "device": "gpu",
+    "gpu_platform_id": 0,
+    "gpu_device_id": 0,
 }
 
-# XGBoost 参数 (reg:squarederror)
+# XGBoost 参数 (回归预测收益率)
 XGB_PARAMS = {
     "objective": "reg:squarederror",
     "max_depth": 8,
     "learning_rate": 0.03,
-    "n_estimators": 500,
+    "n_estimators": 1000,
     "subsample": 0.8,
     "colsample_bytree": 0.8,
     "reg_alpha": 0.1,
     "reg_lambda": 1.0,
+    "tree_method": "gpu_hist",
+    "gpu_id": 0,
 }
 
-# CatBoost 参数 (YetiRank)
+# CatBoost 参数 (回归预测收益率)
 CAT_PARAMS = {
-    "loss_function": "YetiRank",
-    "iterations": 500,
+    "loss_function": "RMSE",
+    "iterations": 1000,
     "depth": 8,
     "learning_rate": 0.05,
     "l2_leaf_reg": 5.0,
     "early_stopping_rounds": 50,
+    "task_type": "GPU",
+    "devices": "0",
 }
 
 # ============================================================

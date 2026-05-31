@@ -95,16 +95,18 @@ class TriModelTrainer:
 
     def train_lightgbm(self, X_train, y_train, X_val, y_val, feature_names):
         """Train LightGBM regressor with early stopping on validation set."""
-        # 过滤掉 n_estimators 和任何 ranking 相关参数（LGBMRegressor 不支持）
-        _ranking_keys = {"objective", "metric", "eval_at"}
-        params = {k: v for k, v in LGBM_PARAMS.items()
-                  if k not in ("n_estimators",) and k not in _ranking_keys}
+        params = {k: v for k, v in LGBM_PARAMS.items() if k not in ("n_estimators",)}
         n_estimators = LGBM_PARAMS.get("n_estimators", 1000)
-        # 强制使用回归目标
-        self.lgb_model = lgb.LGBMRegressor(
-            objective="regression", metric="rmse",
-            **params, n_estimators=n_estimators, verbose=-1,
-        )
+
+        # Validate objective is regression-compatible (LGBMRegressor rejects ranking)
+        _ranking_objectives = {"lambdarank", "rank_xendcg", "rank_xendcg_map"}
+        obj = params.get("objective", "")
+        if obj in _ranking_objectives or obj.startswith("rank_"):
+            logger.warning("LGBM_PARAMS objective='%s' 不兼容 LGBMRegressor，自动修正为 'regression'", obj)
+            params["objective"] = "regression"
+
+        try:
+            self.lgb_model = lgb.LGBMRegressor(**params, n_estimators=n_estimators, verbose=-1)
             self.lgb_model.fit(
                 X_train[feature_names], y_train,
                 eval_set=[(X_val[feature_names], y_val)],
