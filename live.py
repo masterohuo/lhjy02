@@ -1047,6 +1047,80 @@ class LiveTrader:
         }
 
     # ------------------------------------------------------------------
+    # Real-time stop-loss monitor
+    # ------------------------------------------------------------------
+    def check_and_execute_stoploss(self) -> dict:
+        """Scan positions every cycle: single-stock loss >= 8% → market sell,
+        total portfolio loss >= 3% → liquidate all positions.
+
+        Returns dict with status, orders, results.
+        """
+        positions_df = self.get_current_positions()
+
+        if positions_df.empty:
+            return {"status": "NO_POSITIONS", "orders": [], "results": []}
+
+        required = {"pnl", "cost_price", "current_price", "volume"}
+        if not required.issubset(positions_df.columns):
+            return {"status": "NO_PNL_DATA", "orders": [], "results": []}
+
+        orders: list[dict] = []
+
+        # Total portfolio loss check (≥ 3%)
+        cost_total = (positions_df["cost_price"] * positions_df["volume"]).sum()
+        current_total = (positions_df["current_price"] * positions_df["volume"]).sum()
+        total_pnl = (
+            (current_total - cost_total) / cost_total if cost_total > 0 else 0.0
+        )
+
+        if total_pnl <= self.risk_manager.DAILY_LOSS_LIMIT:
+            self.logger.critical(
+                "🚨 实时止损: 总亏损 %.2f%% >= %.0f%%，清空全部持仓",
+                abs(total_pnl) * 100,
+                abs(self.risk_manager.DAILY_LOSS_LIMIT) * 100,
+            )
+            for _, row in positions_df.iterrows():
+                orders.append({
+                    "ts_code": row["ts_code"],
+                    "action": "SELL",
+                    "volume": int(row["volume"]),
+                    "price_type": "MARKET",
+                    "reason": "stop_loss_total",
+                })
+        else:
+            # Single-stock loss check (≥ 8%)
+            for _, row in positions_df.iterrows():
+                if row["pnl"] <= STOP_LOSS:
+                    self.logger.warning(
+                        "🚨 实时止损: %s 单只亏损 %.2f%%，市价卖出",
+                        row["ts_code"], abs(row["pnl"]) * 100,
+                    )
+                    orders.append({
+                        "ts_code": row["ts_code"],
+                        "action": "SELL",
+                        "volume": int(row["volume"]),
+                        "price_type": "MARKET",
+                        "reason": "stop_loss_single",
+                    })
+
+        if not orders:
+            return {"status": "OK", "orders": [], "results": []}
+
+        n_single = sum(1 for o in orders if o.get("reason") == "stop_loss_single")
+        n_total = sum(1 for o in orders if o.get("reason") == "stop_loss_total")
+
+        self.logger.critical(
+            "🔴 实时止损触发: %d 只单只止损, %d 只全仓清仓",
+            n_single, n_total,
+        )
+        send_notification(
+            f"lhjy02 STOP-LOSS: {n_single} single, {n_total} total liquidation"
+        )
+
+        results = self.execute_orders(orders)
+        return {"status": "STOP_LOSS", "orders": orders, "results": results}
+
+    # ------------------------------------------------------------------
     # Daemon scheduler
     # ------------------------------------------------------------------
     def run_daemon(self):
@@ -1099,6 +1173,16 @@ class LiveTrader:
                 while time.time() < next_run.timestamp():
                     sleep_chunk = min(60, max(1, next_run.timestamp() - time.time()))
                     time.sleep(sleep_chunk)
+
+                    # Real-time stop-loss check every ~60s
+                    try:
+                        sl_result = self.check_and_execute_stoploss()
+                        if sl_result.get("status") == "STOP_LOSS":
+                            self.logger.warning(
+                                "⚠️ 止损已执行，继续等待下次调仓"
+                            )
+                    except Exception as e:
+                        self.logger.error("止损检查异常: %s", e, exc_info=True)
 
                 # Run rebalance
                 try:
