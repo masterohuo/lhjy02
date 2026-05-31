@@ -132,12 +132,12 @@ class QmtCallback(_CALLBACK_BASE):
 
     def on_disconnected(self):
         logger = logging.getLogger("live")
-        logger.warning("[QMT] Connection lost")
+        logger.warning("[QMT] 连接断开")
         self._trader._connected = False
 
     def on_connected(self):
         logger = logging.getLogger("live")
-        logger.info("[QMT] Connected")
+        logger.info("[QMT] 已连接")
         self._trader._connected = True
 
 
@@ -165,7 +165,7 @@ class LiveRiskManager(RiskManager):
         if self._initial_day_value is not None and self._initial_day_value > 0:
             daily_pnl = (account_value - self._initial_day_value) / self._initial_day_value
             if daily_pnl < self.DAILY_LOSS_LIMIT:
-                msg = f"DAILY LOSS LIMIT HIT: {daily_pnl:.2%}"
+                msg = f"触发日亏损限制: {daily_pnl:.2%}"
                 logger.error(msg)
                 return False, msg
 
@@ -196,7 +196,7 @@ class LiveRiskManager(RiskManager):
         if total_pnl < self.DAILY_LOSS_LIMIT:
             logger = logging.getLogger("live")
             logger.critical(
-                "EMERGENCY STOP: total PnL %.2f%% < %.2f%%",
+                "🚨 紧急止损: 总亏损 %.2f%% < %.2f%%",
                 total_pnl * 100, self.DAILY_LOSS_LIMIT * 100,
             )
             return True
@@ -225,19 +225,21 @@ class LiveTrader:
         self.logger = _setup_logging(LOGS_DIR, "live")
 
         if not IS_WINDOWS:
-            self.logger.info("Running in Research/DryRun mode on macOS")
+            self.logger.info("当前运行环境: macOS（研究/模拟模式）")
         else:
-            status = "xtquant available" if _HAS_XTQUANT else "xtquant NOT available"
-            self.logger.info("Running on Windows - Live mode (%s)", status)
+            status = "xtquant 已加载" if _HAS_XTQUANT else "xtquant 未加载"
+            self.logger.info("当前运行环境: Windows（实盘模式） - %s", status)
 
-        # Load trained models
+        # 加载训练模型
         self.models = self._load_models()
         if self.models:
-            self.logger.info("Loaded models: %s", list(self.models.keys()))
+            self.logger.info("✅ 已加载模型: %s", list(self.models.keys()))
         else:
-            self.logger.warning(
-                "No trained models found. Run model_trainer.py first."
-            )
+            self.logger.warning("⚠️ 未找到训练模型，启动自动训练...")
+            self.models = self._auto_train_models()
+            if not self.models:
+                self.logger.error("❌ 无可用模型，策略无法运行")
+                self.logger.error("请先手动运行训练: python model_trainer.py")
 
         # Stock selector with loaded models
         self.selector = StockSelector(models_dict=self.models)
@@ -258,7 +260,7 @@ class LiveTrader:
             self._init_qmt()
 
     # ------------------------------------------------------------------
-    # Model loading
+    # 模型加载
     # ------------------------------------------------------------------
     def _load_models(self) -> dict:
         models = {}
@@ -268,15 +270,33 @@ class LiveTrader:
                 try:
                     with open(path, "rb") as f:
                         models[name] = pickle.load(f)
-                    self.logger.info("Loaded %s model from %s", name, path)
+                    self.logger.info("✅ 加载 %s 模型: %s", name, path)
                 except Exception as e:
-                    self.logger.warning("Failed to load %s: %s", name, e)
+                    self.logger.warning("⚠️ %s 模型加载失败: %s", name, e)
             else:
-                self.logger.warning("Model file not found: %s", path)
+                self.logger.warning("⚠️ 未找到模型文件: %s", path)
         return models
 
+    def _auto_train_models(self) -> dict:
+        """自动训练：当模型不存在时自动触发训练流程。"""
+        self.logger.info("")
+        self.logger.info("=" * 60)
+        self.logger.info("🔍 未检测到训练模型，自动启动训练流程...")
+        self.logger.info("=" * 60)
+
+        try:
+            from model_trainer import TriModelTrainer
+            trainer = TriModelTrainer()
+            models = trainer.train_all()
+            self.logger.info("✅ 自动训练完成！")
+            return models
+        except Exception as e:
+            self.logger.error("❌ 自动训练失败: %s", e)
+            self.logger.error("请先手动运行训练: python model_trainer.py")
+            return {}
+
     # ------------------------------------------------------------------
-    # QMT initialization
+    # QMT 初始化
     # ------------------------------------------------------------------
     def _init_qmt(self):
         if not _HAS_XTQUANT:
@@ -290,23 +310,23 @@ class LiveTrader:
             self.xt_trader = xttrader.XtQuantTrader(mini_qmt_path, session_id)
             self.xt_trader.register_callback(QmtCallback(self))
             self.xt_trader.start()
-            self.logger.info("QMT trader initialized, session=%d", session_id)
+            self.logger.info("✅ QMT 交易端初始化成功, 会话ID=%d", session_id)
 
         except Exception as e:
-            self.logger.error("QMT init failed: %s", e)
+            self.logger.error("❌ QMT 初始化失败: %s", e)
             self.xt_trader = None
 
     # ------------------------------------------------------------------
     # QMT connection
     # ------------------------------------------------------------------
     def connect_qmt(self) -> bool:
-        """Connect to MiniQMT with retry (max 3 attempts)."""
+        """连接 MiniQMT（最多重试3次）。"""
         if not IS_WINDOWS:
-            self.logger.info("[DryRun] Skipping QMT connection on non-Windows")
+            self.logger.info("[模拟模式] 非Windows系统，跳过QMT连接")
             return False
 
         if not _HAS_XTQUANT or self.xt_trader is None:
-            self.logger.warning("xtquant not available, cannot connect to QMT")
+            self.logger.warning("xtquant 不可用，无法连接QMT")
             return False
 
         for attempt in range(1, 4):
@@ -317,25 +337,25 @@ class LiveTrader:
                 result = self.xt_trader.connect(ip, port)
                 if result == 0:
                     self._connected = True
-                    self.logger.info("Connected to MiniQMT at %s:%d", ip, port)
+                    self.logger.info("✅ 已连接 MiniQMT: %s:%d", ip, port)
 
                     if self._qmt_account:
                         self.xt_trader.subscribe(self._qmt_account)
-                        self.logger.info("Subscribed to account %s", self._qmt_account)
+                        self.logger.info("✅ 已订阅账户: %s", self._qmt_account)
 
                     return True
                 else:
                     self.logger.warning(
-                        "QMT connection attempt %d/3 returned %s", attempt, result
+                        "⚠️ QMT连接第%d次尝试失败，返回码: %s", attempt, result
                     )
 
             except Exception as e:
-                self.logger.error("QMT connection attempt %d/3 error: %s", attempt, e)
+                self.logger.error("❌ QMT连接第%d次尝试异常: %s", attempt, e)
 
             if attempt < 3:
                 time.sleep(2 ** attempt)
 
-        self.logger.error("Failed to connect to MiniQMT after 3 attempts")
+        self.logger.error("❌ QMT连接失败（已尝试3次）")
         return False
 
     # ------------------------------------------------------------------
@@ -349,7 +369,7 @@ class LiveTrader:
         columns = ["ts_code", "volume", "cost_price", "current_price", "pnl"]
 
         if not self._connected or self.xt_trader is None:
-            self.logger.debug("[DryRun] get_current_positions")
+            self.logger.debug("[模拟] 查询持仓")
             return pd.DataFrame(columns=columns)
 
         try:
@@ -379,7 +399,7 @@ class LiveTrader:
             return df
 
         except Exception as e:
-            self.logger.error("get_current_positions error: %s", e)
+            self.logger.error("查询持仓异常: %s", e)
             return pd.DataFrame(columns=columns)
 
     def _get_single_price(self, ts_code: str) -> float | None:
@@ -404,7 +424,7 @@ class LiveTrader:
     def get_account_info(self) -> dict:
         """Query account balance, available cash, total assets."""
         if not self._connected or self.xt_trader is None:
-            self.logger.debug("[DryRun] get_account_info: using INITIAL_CASH")
+            self.logger.debug("[模拟] 查询账户: 使用初始资金")
             return {
                 "total_asset": INITIAL_CASH,
                 "available_cash": INITIAL_CASH,
@@ -421,7 +441,7 @@ class LiveTrader:
                 "frozen_cash": asset.frozen_cash,
             }
         except Exception as e:
-            self.logger.error("get_account_info error: %s", e)
+            self.logger.error("查询账户异常: %s", e)
             return {
                 "total_asset": INITIAL_CASH,
                 "available_cash": INITIAL_CASH,
@@ -471,7 +491,7 @@ class LiveTrader:
                         missing.remove(ts_code)
 
             except Exception as e:
-                self.logger.warning("get_realtime_quotes via xtdata failed: %s", e)
+                self.logger.warning("⚠️ 实时行情查询失败 (xtdata): %s", e)
 
         # Fallback: use last close from DB for any still-missing codes
         if missing:
@@ -486,7 +506,7 @@ class LiveTrader:
                                 "lastClose": row.get("pre_close"),
                             }
             except Exception as e:
-                self.logger.debug("Fallback price query failed: %s", e)
+                self.logger.debug("备用价格查询失败: %s", e)
 
         return quotes
 
@@ -499,7 +519,7 @@ class LiveTrader:
         Returns dict with keys: selected, target_portfolio, scores
         """
         self.logger.info("=" * 60)
-        self.logger.info("Running daily signal generation ...")
+        self.logger.info("📊 每日信号生成中...")
 
         today = datetime.date.today()
         end_date = today.strftime("%Y%m%d")
@@ -510,17 +530,17 @@ class LiveTrader:
             if not df.empty:
                 df = generate_all_factors(df)
         except Exception as e:
-            self.logger.error("Data loading failed: %s", e)
+            self.logger.error("❌ 数据加载失败: %s", e)
             return {"selected": pd.DataFrame(), "target_portfolio": {}, "scores": pd.DataFrame()}
 
         if df.empty:
-            self.logger.error("No data loaded for signal generation")
+            self.logger.error("❌ 未加载到数据，无法生成信号")
             return {"selected": pd.DataFrame(), "target_portfolio": {}, "scores": pd.DataFrame()}
 
         latest_date = df["date"].max()
-        self.logger.info("Latest data date: %s", latest_date)
+        self.logger.info("最新数据日期: %s", latest_date)
         df_latest = df[df["date"] == latest_date].copy()
-        self.logger.info("Stocks on latest date: %d", len(df_latest))
+        self.logger.info("最新日期股票数: %d", len(df_latest))
 
         # Feature preparation
         exclude = {
@@ -537,10 +557,10 @@ class LiveTrader:
         ]
 
         if not feature_cols:
-            self.logger.error("No feature columns found")
+            self.logger.error("❌ 未找到特征列")
             return {"selected": pd.DataFrame(), "target_portfolio": {}, "scores": pd.DataFrame()}
 
-        self.logger.info("Using %d feature columns", len(feature_cols))
+        self.logger.info("使用 %d 个特征列", len(feature_cols))
 
         X = df_latest[feature_cols].copy()
         X = X.fillna(X.median()).fillna(0.0)
@@ -564,15 +584,15 @@ class LiveTrader:
         target_weights = portfolio["target_weights"]
 
         self.logger.info(
-            "Signal complete: %d stocks selected, %d target positions",
-            len(selected), len(target_weights),
+            "信号生成完成: 选出 %d 只目标股票",
+            len(selected),
         )
 
         if not selected.empty:
             top_picks = selected[["ts_code", "ensemble_score"]].head(5)
             for _, row in top_picks.iterrows():
                 self.logger.info(
-                    "  Top pick: %s  score=%.4f", row["ts_code"], row["ensemble_score"]
+                    "  🏆 Top: %s  综合评分=%.4f", row["ts_code"], row["ensemble_score"]
                 )
 
         return {
@@ -593,7 +613,7 @@ class LiveTrader:
         orders: list[dict] = []
 
         if not target_portfolio:
-            self.logger.info("No target portfolio, generating liquidation orders")
+            self.logger.info("ℹ️ 无目标组合，生成清仓订单")
             for _, row in current_positions.iterrows():
                 orders.append({
                     "ts_code": row["ts_code"],
@@ -645,13 +665,13 @@ class LiveTrader:
             quote = self.get_realtime_quotes([ts_code]).get(ts_code, {})
             price = quote.get("lastPrice", 0)
             if not price or price <= 0:
-                self.logger.warning("No valid price for %s, skipping BUY", ts_code)
+                self.logger.warning("⚠️ %s 无有效价格，跳过买入", ts_code)
                 continue
 
             volume = int(target_value / price / 100) * 100
             if volume < 100:
                 self.logger.warning(
-                    "%s: target volume %d < min 100 shares, skipping", ts_code, volume
+                    "⚠️ %s 目标股数 %d < 最低100股，跳过", ts_code, volume
                 )
                 continue
 
@@ -706,10 +726,10 @@ class LiveTrader:
             orders, current_positions, total_value
         )
         if not approved:
-            self.logger.error("Pre-trade check failed: %s", reason)
+            self.logger.error("❌ 盘前风控检查失败: %s", reason)
             # Emergency: liquidate all if triggered
             if self.risk_manager.emergency_stop(current_positions):
-                self.logger.critical("EMERGENCY STOP: converting all orders to SELL")
+                self.logger.critical("🚨 紧急止损: 所有订单转为卖出")
                 existing_codes = {o["ts_code"] for o in orders}
                 sell_orders = [
                     o for o in orders if o["action"] == "SELL"
@@ -731,11 +751,11 @@ class LiveTrader:
 
         n_buy = sum(1 for o in orders if o["action"] == "BUY")
         n_sell = sum(1 for o in orders if o["action"] == "SELL")
-        self.logger.info("Generated %d orders: %d BUY, %d SELL", len(orders), n_buy, n_sell)
+        self.logger.info("📋 生成 %d 笔订单: %d 买入, %d 卖出", len(orders), n_buy, n_sell)
 
         for o in orders:
             self.logger.info(
-                "  Order: %s %s  vol=%d  (%s)",
+                "  📋 订单: %s %s  数量=%d  (%s)",
                 o["action"], o["ts_code"], o["volume"], o.get("reason", ""),
             )
 
@@ -750,10 +770,10 @@ class LiveTrader:
         Returns list of result dicts: ts_code, action, volume, status, filled_volume, price.
         """
         if not orders:
-            self.logger.info("No orders to execute")
+            self.logger.info("ℹ️ 无订单需要执行")
             return []
 
-        self.logger.info("Executing %d orders ...", len(orders))
+        self.logger.info("🚀 执行 %d 笔订单...", len(orders))
 
         results = [self._execute_single_order(o) for o in orders]
 
@@ -763,7 +783,7 @@ class LiveTrader:
         dry = sum(1 for r in results if r.get("status") == "DRYRUN")
 
         self.logger.info(
-            "Execution complete: %d filled, %d partial, %d rejected, %d dryrun, %d total",
+            "📊 执行完成: %d 成交, %d 部分成交, %d 拒绝, %d 模拟, 共%d笔",
             filled, partial, rejected, dry, len(results),
         )
 
@@ -783,7 +803,7 @@ class LiveTrader:
         current_price = quote.get("lastPrice", 0)
 
         if not current_price or current_price <= 0:
-            self.logger.warning("No price for %s, skipping order", ts_code)
+            self.logger.warning("⚠️ %s 无价格数据，跳过订单", ts_code)
             return {
                 "ts_code": ts_code, "action": action, "volume": volume,
                 "status": "REJECTED", "filled_volume": 0, "price": 0,
@@ -793,7 +813,7 @@ class LiveTrader:
         # Dry run / paper trading
         if not self._connected:
             self.logger.info(
-                "[DryRun] %s %s  vol=%d  price=%.2f  (%s)",
+                "[模拟] %s %s  数量=%d  价格=%.2f  (%s)",
                 action, ts_code, volume, current_price, reason,
             )
             return {
@@ -819,7 +839,7 @@ class LiveTrader:
             )
 
             self.logger.info(
-                "[Live] %s %s  vol=%d  limit=%.2f  (%s)",
+                "[实盘] %s %s  数量=%d  限价=%.2f  (%s)",
                 action, ts_code, volume, limit_price if limit_price > 0 else current_price, reason,
             )
 
@@ -829,7 +849,7 @@ class LiveTrader:
                 "lhjy02_strategy", reason,
             )
 
-            self.logger.info("Order submitted: id=%d  %s %s %d", order_id, ts_code, action, volume)
+            self.logger.info("✅ 订单已提交: id=%d  %s %s %d", order_id, ts_code, action, volume)
 
             order_record = {
                 "ts_code": ts_code,
@@ -855,7 +875,7 @@ class LiveTrader:
                 }
             elif filled_vol > 0:
                 self.logger.warning(
-                    "Partial fill %s: %d/%d, retrying remaining at market", ts_code, filled_vol, volume
+                    "⚠️ %s 部分成交 %d/%d，剩余市价追单", ts_code, filled_vol, volume
                 )
                 self._cancel_order(order_id)
 
@@ -877,7 +897,7 @@ class LiveTrader:
                 }
             else:
                 self._cancel_order(order_id)
-                self.logger.warning("No fill for %s, retrying at market", ts_code)
+                self.logger.warning("⚠️ %s 未成交，市价追单", ts_code)
 
                 market_id = self.xt_trader.order_stock(
                     self._qmt_account, ts_code, qmt_order_type, volume,
@@ -897,7 +917,7 @@ class LiveTrader:
                 }
 
         except Exception as e:
-            self.logger.error("Order execution error for %s: %s", ts_code, e)
+            self.logger.error("❌ 订单执行异常 %s: %s", ts_code, e)
             return {
                 "ts_code": ts_code, "action": action, "volume": volume,
                 "status": "REJECTED", "filled_volume": 0,
@@ -925,9 +945,9 @@ class LiveTrader:
     def _cancel_order(self, order_id):
         try:
             self.xt_trader.cancel_order(order_id)
-            self.logger.info("Order %d cancelled", order_id)
+            self.logger.info("✅ 订单 %d 已取消", order_id)
         except Exception as e:
-            self.logger.warning("Cancel order %d failed: %s", order_id, e)
+            self.logger.warning("⚠️ 取消订单 %d 失败: %s", order_id, e)
 
     # ------------------------------------------------------------------
     # Full rebalance cycle
@@ -935,7 +955,7 @@ class LiveTrader:
     def run_rebalance(self) -> dict:
         """Execute full rebalance: positions → signal → orders → execute → verify."""
         self.logger.info("=" * 60)
-        self.logger.info("REBALANCE CYCLE START")
+        self.logger.info("🔄 调仓周期开始")
         self.logger.info("=" * 60)
 
         start_time = time.time()
@@ -945,7 +965,7 @@ class LiveTrader:
         account = self.get_account_info()
 
         self.logger.info(
-            "Account: total ¥%,.0f  available ¥%,.0f  positions: %d",
+            "💰 账户: 总资产 ¥%,.0f  可用 ¥%,.0f  持仓: %d只",
             account["total_asset"], account["available_cash"], len(positions_df),
         )
 
@@ -955,7 +975,7 @@ class LiveTrader:
 
         # 3. Emergency stop check
         if self.risk_manager.emergency_stop(positions_df):
-            self.logger.critical("EMERGENCY STOP: liquidating all positions")
+            self.logger.critical("🚨 紧急止损: 清空所有持仓")
             liquidate = [
                 {
                     "ts_code": row["ts_code"],
@@ -980,7 +1000,7 @@ class LiveTrader:
         target_portfolio = signal.get("target_portfolio", {})
 
         if not target_portfolio:
-            self.logger.warning("No target portfolio generated, skipping rebalance")
+            self.logger.warning("⚠️ 未生成目标组合，跳过调仓")
             return {
                 "status": "NO_SIGNAL",
                 "orders": [],
@@ -1007,7 +1027,7 @@ class LiveTrader:
         elapsed = time.time() - start_time
         filled = sum(1 for r in results if r.get("status") == "FILLED")
         self.logger.info(
-            "REBALANCE COMPLETE in %.1fs: %d/%d orders filled",
+            "✅ 调仓完成 (%.1f秒): %d/%d 订单已成交",
             elapsed, filled, len(results),
         )
 
@@ -1031,8 +1051,8 @@ class LiveTrader:
     def run_daemon(self):
         """Background daemon: run rebalance on schedule (daily 14:55 or weekly Friday 14:55)."""
         self.logger.info("=" * 60)
-        self.logger.info("DAEMON STARTED")
-        self.logger.info("Rebalance frequency: %s", REBALANCE_FREQ)
+        self.logger.info("🚀 守护进程已启动")
+        self.logger.info("调仓频率: %s", REBALANCE_FREQ)
         self.logger.info("=" * 60)
 
         # Parse schedule
@@ -1044,14 +1064,14 @@ class LiveTrader:
             }
             day_str = freq.split("-")[1]
             target_weekday = day_map.get(day_str, 4)
-            self.logger.info("Weekly rebalance on %s at 14:55", day_str)
+            self.logger.info("每周 %s 14:55 调仓", day_str)
         elif freq in ("D", "DAILY", "1D"):
             target_weekday = None
-            self.logger.info("Daily rebalance at 14:55")
+            self.logger.info("每日 14:55 调仓")
         else:
             target_weekday = 4
             self.logger.info(
-                "Unknown freq '%s', defaulting to Friday 14:55", REBALANCE_FREQ
+                "未知频率 '%s'，默认为每周五 14:55 调仓", REBALANCE_FREQ
             )
 
         TARGET_HOUR, TARGET_MINUTE = 14, 55
@@ -1059,7 +1079,7 @@ class LiveTrader:
         # Connect to QMT if Windows
         if IS_WINDOWS and _HAS_XTQUANT:
             if not self.connect_qmt():
-                self.logger.warning("QMT not connected, will retry each cycle")
+                self.logger.warning("QMT 未连接，每个周期将重试")
 
         try:
             while True:
@@ -1070,7 +1090,7 @@ class LiveTrader:
                 wait_sec = max(1, (next_run - now).total_seconds())
 
                 self.logger.info(
-                    "Next rebalance at %s (%.0fs from now)",
+                    "⏳ 下次调仓: %s (%.0f秒后)",
                     next_run.strftime("%Y-%m-%d %H:%M:%S"), wait_sec,
                 )
 
@@ -1085,17 +1105,17 @@ class LiveTrader:
                         self.connect_qmt()
 
                     result = self.run_rebalance()
-                    self.logger.info("Rebalance result: %s", result.get("status"))
+                    self.logger.info("调仓结果: %s", result.get("status"))
 
                 except Exception as e:
-                    self.logger.error("Rebalance error: %s", e, exc_info=True)
+                    self.logger.error("调仓异常: %s", e, exc_info=True)
                     send_notification(f"lhjy02 rebalance ERROR: {e}")
 
         except KeyboardInterrupt:
-            self.logger.info("DAEMON STOPPED by user (KeyboardInterrupt)")
+            self.logger.info("🛑 守护进程已停止（用户中断）")
             send_notification("lhjy02 daemon stopped")
         except Exception as e:
-            self.logger.error("DAEMON CRASHED: %s", e, exc_info=True)
+            self.logger.error("💥 守护进程崩溃: %s", e, exc_info=True)
             send_notification(f"lhjy02 daemon CRASHED: {e}")
             raise
 
@@ -1135,24 +1155,24 @@ class LiveTrader:
         signal = self.run_daily_signal()
 
         if signal["selected"].empty:
-            self.logger.warning("No stocks selected during paper analysis")
+            self.logger.warning("⚠️ 模拟分析未选出股票")
             return signal
 
         selected = signal["selected"]
 
         if "ensemble_score" in selected.columns:
             self.logger.info(
-                "Score range: %.4f ~ %.4f",
+                "评分范围: %.4f ~ %.4f",
                 selected["ensemble_score"].min(), selected["ensemble_score"].max(),
             )
 
         if "close" in selected.columns:
             self.logger.info(
-                "Price range: ¥%.2f ~ ¥%.2f",
+                "价格范围: ¥%.2f ~ ¥%.2f",
                 selected["close"].min(), selected["close"].max(),
             )
 
-        self.logger.info("Target portfolio: %s", signal["target_portfolio"])
+        self.logger.info("目标组合: %s", signal["target_portfolio"])
         return signal
 
 

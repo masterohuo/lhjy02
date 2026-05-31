@@ -77,12 +77,27 @@ CAT_PARAMS = {
     "early_stopping_rounds": 50,
 }
 
-# QMT 配置
+# ============================================================
+# QMT 连接配置（Windows MiniQMT 实盘交易）
+# ============================================================
+# 使用方法：
+#   方式1: 设置环境变量  export QMT_ACCOUNT_ID="你的资金账户"
+#   方式2: 直接修改下面的 account_id 字段
+#   方式3: 命令行参数  python live.py --account 你的资金账户
+#
+# 账户类型说明：
+#   - 资金账户：国金证券给你的资金账号（纯数字）
+#   - 不是客户号，不是手机号
+#   - 在MiniQMT交易端登录后，左上角可以看到
+#
+# ip/port：MiniQMT默认监听 127.0.0.1:5861，一般无需修改
+# mini_mode：True=使用MiniQMT模式，False=使用完整QMT模式
+# ============================================================
 QMT_CONFIG = {
     "ip": "127.0.0.1",
     "port": 5861,
     "mini_mode": True,
-    "account_id": os.environ.get("QMT_ACCOUNT_ID", ""),
+    "account_id": os.environ.get("QMT_ACCOUNT_ID", ""),  # ← 在这里填写你的资金账户
 }
 
 # 日志

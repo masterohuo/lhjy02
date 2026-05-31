@@ -4,6 +4,8 @@ model_trainer.py - lhjy02 3-model ensemble training system.
 Trains LightGBM (lambdarank), XGBoost (reg:squarederror), and CatBoost (YetiRank)
 models for stock ranking and combines them into an ensemble.
 """
+import argparse
+import logging
 import pickle
 import numpy as np
 import pandas as pd
@@ -17,6 +19,8 @@ from config import (
 )
 from data_loader import load_all_tables
 from factor_system import generate_all_factors
+
+logger = logging.getLogger(__name__)
 
 
 class TriModelTrainer:
@@ -179,13 +183,12 @@ class TriModelTrainer:
         return self.cat_model
 
     def train_all(self, start_date=None, end_date=None, val_ratio=0.2):
-        """Full pipeline: prepare data, temporal split, train all 3 models.
-
-        Splits the last val_ratio of dates for validation to avoid look-ahead bias.
-        """
+        """完整训练流程：数据准备 → 时间切分 → 训练三模型。"""
+        logger.info("开始训练三模型集成系统...")
         X, y, meta, feature_names = self.prepare_data(
             start_date=start_date, end_date=end_date
         )
+        logger.info("数据准备完成: %d行, %d个特征", len(X), len(feature_names))
 
         # Temporal split: last val_ratio of dates for validation
         dates_sorted = meta["date"].sort_values().unique()
@@ -208,13 +211,23 @@ class TriModelTrainer:
 
         models = {}
 
+        logger.info("训练 LightGBM (lambdarank)...")
         models["lgb"] = self.train_lightgbm(
             X_train, y_train, X_val, y_val, feature_names, group_train, group_val
         )
+        logger.info("✅ LightGBM 训练完成")
 
+        logger.info("训练 XGBoost (reg:squarederror)...")
         models["xgb"] = self.train_xgboost(
             X_train, y_train, X_val, y_val, feature_names
         )
+        logger.info("✅ XGBoost 训练完成")
+
+        logger.info("训练 CatBoost (YetiRank)...")
+        models["cat"] = self.train_catboost(
+            X_train, y_train, X_val, y_val, feature_names, group_train, group_val
+        )
+        logger.info("✅ CatBoost 训练完成")
 
         models["cat"] = self.train_catboost(
             X_train, y_train, X_val, y_val, feature_names, group_train, group_val
@@ -277,6 +290,57 @@ class TriModelTrainer:
 
 
 def train(start_date=None, end_date=None):
-    """Orchestrate the full training pipeline. Returns dict of trained models."""
+    """运行完整训练流程，返回训练好的模型字典。"""
     trainer = TriModelTrainer()
     return trainer.train_all(start_date=start_date, end_date=end_date)
+
+
+# ============================================================
+# CLI 入口
+# ============================================================
+def main():
+    """命令行入口：python model_trainer.py [--start-date YYYYMMDD] [--end-date YYYYMMDD]"""
+    parser = argparse.ArgumentParser(
+        description="lhjy02 三模型集成训练（LightGBM + XGBoost + CatBoost）"
+    )
+    parser.add_argument("--start-date", type=str, default=None,
+                        help="训练起始日期，如 20210101（默认：5年前）")
+    parser.add_argument("--end-date", type=str, default=None,
+                        help="训练截止日期，如 20260501（默认：今天）")
+    args = parser.parse_args()
+
+    # 配置日志
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s | %(levelname)s | %(message)s",
+        datefmt="%Y-%m-%d %H:%M:%S",
+    )
+
+    logger.info("=" * 60)
+    logger.info("lhjy02 三模型集成训练")
+    logger.info("=" * 60)
+
+    models = train(start_date=args.start_date, end_date=args.end_date)
+
+    logger.info("=" * 60)
+    logger.info("训练完成！已保存模型到: %s", MODELS_DIR)
+    for name, model in models.items():
+        logger.info("  %s: %s", name, type(model).__name__)
+    logger.info("=" * 60)
+
+    # 输出因子重要性
+    try:
+        trainer = TriModelTrainer()
+        X, y, meta, feature_names = trainer.prepare_data(
+            start_date=args.start_date, end_date=args.end_date
+        )
+        importance = trainer.analyze_factor_importance(models, feature_names, top_n=20)
+        logger.info("\nTop 20 因子重要性:")
+        for _, row in importance.iterrows():
+            logger.info("  %.4f  %s", row["mean_importance"], row["factor"])
+    except Exception as e:
+        logger.warning("因子重要性分析失败: %s", e)
+
+
+if __name__ == "__main__":
+    main()
