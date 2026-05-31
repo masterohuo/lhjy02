@@ -1,8 +1,8 @@
 """
 model_trainer.py - lhjy02 3-model ensemble training system.
 
-Trains LightGBM (lambdarank), XGBoost (reg:squarederror), and CatBoost (YetiRank)
-models for stock ranking and combines them into an ensemble.
+Trains LightGBM (regression), XGBoost (reg:squarederror), and CatBoost (RMSE)
+regression models for stock return prediction and combines them into an ensemble.
 """
 import argparse
 import logging
@@ -11,7 +11,7 @@ import numpy as np
 import pandas as pd
 import lightgbm as lgb
 from xgboost import XGBRegressor
-from catboost import CatBoostRanker, Pool
+from catboost import CatBoostRegressor, Pool
 
 from config import (
     MODELS_DIR, LGBM_PARAMS, XGB_PARAMS, CAT_PARAMS,
@@ -24,7 +24,7 @@ logger = logging.getLogger(__name__)
 
 
 class TriModelTrainer:
-    """3-model ensemble trainer for stock ranking."""
+    """3-model ensemble trainer for stock return prediction (regression)."""
 
     def __init__(self):
         self.lgb_model = None
@@ -47,7 +47,6 @@ class TriModelTrainer:
         )
 
         # Extract metadata as numpy arrays AFTER sort but BEFORE dropna
-        # (immune to DataFrame fragmentation issues)
         ts_arr = df['ts_code'].values.copy()
         date_arr = df['date'].values.copy()
 
@@ -77,7 +76,7 @@ class TriModelTrainer:
         y = df["label"].reset_index(drop=True)
         X = df[feature_cols].reset_index(drop=True)
 
-        # Fill any remaining NaN in features (safety net; should be none after dropna above)
+        # Fill any remaining NaN in features (safety net)
         X = X.fillna(X.median())
         X = X.fillna(0.0)
 
@@ -89,45 +88,15 @@ class TriModelTrainer:
 
         return X, y, meta, feature_cols
 
-    def _build_query_groups(self, meta_df):
-        """Return group sizes (stocks per date) for ranking models."""
-        return meta_df.groupby("date", sort=False).size().values
-
-    def _to_rank_labels(self, y, groups):
-        """Convert continuous labels to integer ranks within each query group."""
-        import numpy as np
-        num_leaves = LGBM_PARAMS.get("num_leaves", 31) - 1
-        ranked = np.zeros(len(y), dtype=np.int32)
-        pos = 0
-        for g_size in groups:
-            if g_size > 0:
-                scores = y.iloc[pos:pos + g_size].values
-                # Map ranks to [0, num_leaves-1] using quantile-based binning
-                ranks = np.argsort(np.argsort(scores))  # 0 = worst, n-1 = best
-                if g_size > num_leaves:
-                    # Quantile bin: map to num_leaves discrete levels
-                    ranked[pos:pos + g_size] = (ranks.astype(np.float64) / g_size * num_leaves).astype(np.int32)
-                else:
-                    ranked[pos:pos + g_size] = ranks.astype(np.int32)
-            pos += g_size
-        return ranked
-
-    def train_lightgbm(self, X_train, y_train, X_val, y_val, feature_names,
-                       group_train, group_val):
-        """Train LightGBM ranker with lambdarank objective and query groups."""
+    def train_lightgbm(self, X_train, y_train, X_val, y_val, feature_names):
+        """Train LightGBM regressor with early stopping on validation set."""
         params = {k: v for k, v in LGBM_PARAMS.items() if k != "n_estimators"}
-        n_estimators = LGBM_PARAMS.get("n_estimators", 500)
-        
-        # Convert labels to ranks for lambdarank
-        y_train_r = self._to_rank_labels(y_train.reset_index(drop=True), group_train)
-        y_val_r = self._to_rank_labels(y_val.reset_index(drop=True), group_val)
+        n_estimators = LGBM_PARAMS.get("n_estimators", 1000)
 
-        self.lgb_model = lgb.LGBMRanker(**params, n_estimators=n_estimators, verbose=-1)
+        self.lgb_model = lgb.LGBMRegressor(**params, n_estimators=n_estimators, verbose=-1)
         self.lgb_model.fit(
-            X_train[feature_names], y_train_r,
-            group=group_train,
-            eval_set=[(X_val[feature_names], y_val_r)],
-            eval_group=[group_val],
+            X_train[feature_names], y_train,
+            eval_set=[(X_val[feature_names], y_val)],
             callbacks=[lgb.early_stopping(50), lgb.log_evaluation(0)],
         )
 
@@ -139,7 +108,7 @@ class TriModelTrainer:
     def train_xgboost(self, X_train, y_train, X_val, y_val, feature_names):
         """Train XGBoost regressor with early stopping on validation set."""
         params = {k: v for k, v in XGB_PARAMS.items() if k not in ("n_estimators",)}
-        n_estimators = XGB_PARAMS.get("n_estimators", 500)
+        n_estimators = XGB_PARAMS.get("n_estimators", 1000)
 
         self.xgb_model = XGBRegressor(**params, n_estimators=n_estimators,
                                        early_stopping_rounds=50, verbosity=0)
@@ -154,22 +123,17 @@ class TriModelTrainer:
 
         return self.xgb_model
 
-    def train_catboost(self, X_train, y_train, X_val, y_val, feature_names,
-                       group_train, group_val):
-        """Train CatBoost with YetiRank loss function and group_id."""
+    def train_catboost(self, X_train, y_train, X_val, y_val, feature_names):
+        """Train CatBoost regressor with RMSE loss and early stopping."""
         params = {k: v for k, v in CAT_PARAMS.items()
                   if k not in ("iterations", "early_stopping_rounds")}
-        iterations = CAT_PARAMS.get("iterations", 2000)
-        early_stopping_rounds = CAT_PARAMS.get("early_stopping_rounds", 100)
+        iterations = CAT_PARAMS.get("iterations", 1000)
+        early_stopping_rounds = CAT_PARAMS.get("early_stopping_rounds", 50)
 
-        # Build group_id arrays: each unique integer identifies a query group (date)
-        train_groups = np.repeat(np.arange(len(group_train)), group_train)
-        val_groups = np.repeat(np.arange(len(group_val)), group_val)
+        train_pool = Pool(X_train[feature_names], y_train)
+        val_pool = Pool(X_val[feature_names], y_val)
 
-        train_pool = Pool(X_train[feature_names], y_train, group_id=train_groups)
-        val_pool = Pool(X_val[feature_names], y_val, group_id=val_groups)
-
-        self.cat_model = CatBoostRanker(**params, iterations=iterations, verbose=0)
+        self.cat_model = CatBoostRegressor(**params, iterations=iterations, verbose=0)
         self.cat_model.fit(
             train_pool,
             eval_set=val_pool,
@@ -203,17 +167,12 @@ class TriModelTrainer:
         y_train = y.loc[train_mask]
         X_val = X.loc[val_mask]
         y_val = y.loc[val_mask]
-        meta_train = meta.loc[train_mask].reset_index(drop=True)
-        meta_val = meta.loc[val_mask].reset_index(drop=True)
-
-        group_train = self._build_query_groups(meta_train)
-        group_val = self._build_query_groups(meta_val)
 
         models = {}
 
-        logger.info("训练 LightGBM (lambdarank)...")
+        logger.info("训练 LightGBM (regression)...")
         models["lgb"] = self.train_lightgbm(
-            X_train, y_train, X_val, y_val, feature_names, group_train, group_val
+            X_train, y_train, X_val, y_val, feature_names
         )
         lgb_iters = getattr(models["lgb"], 'n_iterations_', models["lgb"].n_estimators)
         logger.info("✅ LightGBM 训练完成, 迭代次数: %d", lgb_iters)
@@ -225,9 +184,9 @@ class TriModelTrainer:
         xgb_iters = getattr(models["xgb"], 'best_iteration', models["xgb"].n_estimators)
         logger.info("✅ XGBoost 训练完成, 迭代次数: %d", xgb_iters)
 
-        logger.info("训练 CatBoost (YetiRank)...")
+        logger.info("训练 CatBoost (RMSE)...")
         models["cat"] = self.train_catboost(
-            X_train, y_train, X_val, y_val, feature_names, group_train, group_val
+            X_train, y_train, X_val, y_val, feature_names
         )
         cat_iters = getattr(models["cat"], 'best_iteration_', getattr(models["cat"], 'iteration_count_', 0))
         logger.info("✅ CatBoost 训练完成, 迭代次数: %d", cat_iters)
