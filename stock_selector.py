@@ -343,18 +343,31 @@ def select_and_build_portfolio(
     # 2. 初始化
     selector = StockSelector(models_dict=models)
 
-    # 3. 特征列选择
+    # 3. 特征列选择（排除所有原始数据库字段，仅保留衍生因子）
     exclude = {
+        # Metadata / label
         'ts_code', 'date', 'label', 'future_return', 'target',
+        # Raw price/volume (stock_daily)
         'pre_close', 'close', 'change', 'pct_chg', 'amount', 'volume',
         'up_limit', 'down_limit', 'open', 'high', 'low',
+        # Raw fundamental/market (stock_daily_basic)
+        'pe', 'pe_ttm', 'pb', 'total_mv', 'float_mv',
+        'turnover_rate', 'volume_ratio',
+        # Raw moneyflow volume (stock_moneyflow)
+        'buy_sm_vol', 'sell_sm_vol', 'buy_md_vol', 'sell_md_vol',
+        'buy_lg_vol', 'sell_lg_vol', 'buy_elg_vol', 'sell_elg_vol',
+        'net_mf_amount',
+        # Non-predictive
+        'adj_factor',
     }
     meta_cols = [c for c in ['ts_code', 'close', 'up_limit', 'float_mv',
                               'total_mv', 'pre_close'] if c in df.columns]
 
     feature_cols = [
         c for c in df.columns
-        if c not in exclude and pd.api.types.is_numeric_dtype(df[c])
+        if c not in exclude
+        and pd.api.types.is_numeric_dtype(df[c])
+        and not c.startswith('_')
     ]
     logger.info(f"Using {len(feature_cols)} features for prediction")
 

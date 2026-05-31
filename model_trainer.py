@@ -50,13 +50,31 @@ class TriModelTrainer:
         ts_arr = df['ts_code'].values.copy()
         date_arr = df['date'].values.copy()
 
-        # Define feature columns (exclude meta, price-only, forward_ret)
+        # Define feature columns (exclude meta, raw DB fields, forward_ret, internal)
         meta_set = {"ts_code", "date", "label"}
+
+        # Raw price/volume fields from stock_daily
         price_set = {"open", "high", "low", "pre_close", "close", "change",
                      "pct_chg", "amount", "volume", "up_limit", "down_limit"}
+
+        # Raw fundamental/market fields from stock_daily_basic
+        fundamental_set = {"pe", "pe_ttm", "pb", "total_mv", "float_mv",
+                           "turnover_rate", "volume_ratio"}
+
+        # Raw moneyflow volume fields from stock_moneyflow
+        moneyflow_set = {"buy_sm_vol", "sell_sm_vol", "buy_md_vol", "sell_md_vol",
+                         "buy_lg_vol", "sell_lg_vol", "buy_elg_vol", "sell_elg_vol",
+                         "net_mf_amount"}
+
+        # Non-predictive raw columns
+        other_set = {"adj_factor"}
+
+        exclude_set = (meta_set | price_set | fundamental_set | moneyflow_set | other_set)
+
         feature_cols = [c for c in df.columns
-                        if c not in meta_set and c not in price_set
-                        and not c.startswith('forward_ret_')]
+                        if c not in exclude_set
+                        and not c.startswith('forward_ret_')
+                        and not c.startswith('_')]
 
         # Drop NaN across features and label together so X, y stay aligned
         df = df.dropna(subset=feature_cols + ["label"]).copy()
