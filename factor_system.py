@@ -187,6 +187,8 @@ def _consecutive_signed(df, col):
 # ============================================================
 
 def _compute_A(df):
+    new_cols = {}
+
     sm_vol = df['buy_sm_vol'] + df['sell_sm_vol']
     md_vol = df['buy_md_vol'] + df['sell_md_vol']
     lg_vol = df['buy_lg_vol'] + df['sell_lg_vol']
@@ -201,40 +203,42 @@ def _compute_A(df):
     vol = df['volume'].replace(0, np.nan)
 
     # A1-A5: net volumes (normalized)
-    df['sm_net_vol'] = sm_net / vol
-    df['md_net_vol'] = md_net / vol
-    df['lg_net_vol'] = lg_net / vol
-    df['elg_net_vol'] = elg_net / vol
-    df['inst_net_vol'] = inst_net / vol
+    new_cols['sm_net_vol'] = sm_net / vol
+    new_cols['md_net_vol'] = md_net / vol
+    new_cols['lg_net_vol'] = lg_net / vol
+    new_cols['elg_net_vol'] = elg_net / vol
+    new_cols['inst_net_vol'] = inst_net / vol
 
     # A6: retail net vol
-    df['retail_net_vol'] = df['sm_net_vol']
+    new_cols['retail_net_vol'] = new_cols['sm_net_vol']
 
     # A7-A8: institutional ratios
-    df['inst_retail_ratio'] = inst_net / (sm_net.abs() + EPS)
-    df['inst_md_ratio'] = inst_net / (md_net.abs() + EPS)
+    new_cols['inst_retail_ratio'] = inst_net / (sm_net.abs() + EPS)
+    new_cols['inst_md_ratio'] = inst_net / (md_net.abs() + EPS)
 
     # A9-A16: buy/sell ratios
-    df['sm_buy_ratio'] = df['buy_sm_vol'] / (sm_vol + EPS)
-    df['sm_sell_ratio'] = 1.0 - df['sm_buy_ratio']
-    df['md_buy_ratio'] = df['buy_md_vol'] / (md_vol + EPS)
-    df['md_sell_ratio'] = 1.0 - df['md_buy_ratio']
-    df['lg_buy_ratio'] = df['buy_lg_vol'] / (lg_vol + EPS)
-    df['lg_sell_ratio'] = 1.0 - df['lg_buy_ratio']
-    df['elg_buy_ratio'] = df['buy_elg_vol'] / (elg_vol + EPS)
-    df['elg_sell_ratio'] = 1.0 - df['elg_buy_ratio']
+    new_cols['sm_buy_ratio'] = df['buy_sm_vol'] / (sm_vol + EPS)
+    new_cols['sm_sell_ratio'] = 1.0 - new_cols['sm_buy_ratio']
+    new_cols['md_buy_ratio'] = df['buy_md_vol'] / (md_vol + EPS)
+    new_cols['md_sell_ratio'] = 1.0 - new_cols['md_buy_ratio']
+    new_cols['lg_buy_ratio'] = df['buy_lg_vol'] / (lg_vol + EPS)
+    new_cols['lg_sell_ratio'] = 1.0 - new_cols['lg_buy_ratio']
+    new_cols['elg_buy_ratio'] = df['buy_elg_vol'] / (elg_vol + EPS)
+    new_cols['elg_sell_ratio'] = 1.0 - new_cols['elg_buy_ratio']
 
     # A17-A18: imbalance
-    df['sm_imbalance'] = sm_net / (sm_vol + EPS)
+    new_cols['sm_imbalance'] = sm_net / (sm_vol + EPS)
     inst_buy = df['buy_lg_vol'] + df['buy_elg_vol']
     inst_sell = df['sell_lg_vol'] + df['sell_elg_vol']
-    df['inst_imbalance'] = (inst_buy - inst_sell) / (inst_buy + inst_sell + EPS)
+    new_cols['inst_imbalance'] = (inst_buy - inst_sell) / (inst_buy + inst_sell + EPS)
 
     # A19: normalized net moneyflow
-    df['net_mf_amount_norm'] = df['net_mf_amount'] / df['amount'].replace(0, np.nan)
+    new_cols['net_mf_amount_norm'] = df['net_mf_amount'] / df['amount'].replace(0, np.nan)
 
     # A20: retail participation
-    df['retail_participation'] = sm_vol / vol
+    new_cols['retail_participation'] = sm_vol / vol
+
+    return new_cols
 
 
 # ============================================================
@@ -242,29 +246,33 @@ def _compute_A(df):
 # ============================================================
 
 def _compute_B(df):
+    new_cols = {}
+
     # B1-B9: rolling net flows
     for w in [5, 10, 20]:
-        df[f'lg_net_vol_{w}d'] = _roll(df, 'lg_net_vol', w, 'mean')
-        df[f'inst_net_vol_{w}d'] = _roll(df, 'inst_net_vol', w, 'mean')
-        df[f'net_mf_amount_{w}d'] = _roll(df, 'net_mf_amount_norm', w, 'mean')
+        new_cols[f'lg_net_vol_{w}d'] = _roll(df, 'lg_net_vol', w, 'mean')
+        new_cols[f'inst_net_vol_{w}d'] = _roll(df, 'inst_net_vol', w, 'mean')
+        new_cols[f'net_mf_amount_{w}d'] = _roll(df, 'net_mf_amount_norm', w, 'mean')
 
     # B10: flow persistence (signed consecutive days of inst direction)
     inst_raw = df['inst_net_vol'] * df['volume']
-    df['flow_persistence'] = _consecutive_signed(
+    new_cols['flow_persistence'] = _consecutive_signed(
         df.assign(_tmp_fi=inst_raw), '_tmp_fi'
     )
 
     # B11: flow acceleration (change in 5d rolling inst flow)
-    df['flow_acceleration'] = df['inst_net_vol_5d'] - _shift(df, 'inst_net_vol_5d', 5)
+    new_cols['flow_acceleration'] = new_cols['inst_net_vol_5d'] - _shift(
+        df.assign(_inst_5d=new_cols['inst_net_vol_5d']), '_inst_5d', 5
+    )
 
     # B12: flow-price divergence (-corr between inst flow and return over 20d)
     ret_1d = df.groupby('ts_code')['close'].pct_change()
-    df['flow_price_divergence'] = -_roll_corr(
+    new_cols['flow_price_divergence'] = -_roll_corr(
         df.assign(_r=ret_1d), 'inst_net_vol', '_r', 20
     )
 
     # B13: lg buy/sell volume ratio (5d rolling)
-    df['lg_buy_sell_ratio'] = (
+    new_cols['lg_buy_sell_ratio'] = (
         _roll(df, 'buy_lg_vol', 5, 'sum') / (_roll(df, 'sell_lg_vol', 5, 'sum') + EPS)
     )
 
@@ -272,33 +280,35 @@ def _compute_B(df):
     slope_vals = df.groupby('ts_code')['inst_net_vol'].transform(
         lambda g: pd.Series(_numba_slope(g.values, 10, 5), index=g.index)
     )
-    df['inst_accumulation_momentum'] = slope_vals / (_roll(df, 'inst_net_vol', 10, 'std') + EPS)
+    new_cols['inst_accumulation_momentum'] = slope_vals / (_roll(df, 'inst_net_vol', 10, 'std') + EPS)
 
     # B15: flow volatility (cv of inst_net_vol over 10d)
     mean10 = _roll(df, 'inst_net_vol', 10, 'mean')
-    df['flow_volatility'] = _roll(df, 'inst_net_vol', 10, 'std') / (mean10.abs() + EPS)
+    new_cols['flow_volatility'] = _roll(df, 'inst_net_vol', 10, 'std') / (mean10.abs() + EPS)
 
     # B16: lg concentration (lg share of total absolute net flow)
     total_abs = ((df['buy_sm_vol'] - df['sell_sm_vol']).abs() +
                  (df['buy_md_vol'] - df['sell_md_vol']).abs() +
                  (df['buy_lg_vol'] - df['sell_lg_vol']).abs() +
                  (df['buy_elg_vol'] - df['sell_elg_vol']).abs())
-    df['lg_concentration'] = (df['buy_lg_vol'] - df['sell_lg_vol']).abs() / (total_abs + EPS)
+    new_cols['lg_concentration'] = (df['buy_lg_vol'] - df['sell_lg_vol']).abs() / (total_abs + EPS)
 
     # B17: net_mf_amount ratio to 5d MA
     ma5 = _roll(df, 'net_mf_amount_norm', 5, 'mean')
-    df['net_mf_amount_ma5_ratio'] = df['net_mf_amount_norm'] / (ma5.abs() + EPS) - 1.0
+    new_cols['net_mf_amount_ma5_ratio'] = df['net_mf_amount_norm'] / (ma5.abs() + EPS) - 1.0
 
     # B18: institution flow stability (1 - |autocorr| over 10d)
     lag1 = _shift(df, 'inst_net_vol', 1)
     ac = _roll_corr(df.assign(_l=lag1), 'inst_net_vol', '_l', 10)
-    df['inst_flow_stability'] = 1.0 - ac.abs()
+    new_cols['inst_flow_stability'] = 1.0 - ac.abs()
 
     # B19: smart money 5d (elg rolling)
-    df['smart_money_5d'] = _roll(df, 'elg_net_vol', 5, 'mean')
+    new_cols['smart_money_5d'] = _roll(df, 'elg_net_vol', 5, 'mean')
 
     # B20: fund reversal signal (deviation of 5d from 20d flow)
-    df['fund_reversal_signal'] = df['inst_net_vol_5d'] - df['inst_net_vol_20d']
+    new_cols['fund_reversal_signal'] = new_cols['inst_net_vol_5d'] - new_cols['inst_net_vol_20d']
+
+    return new_cols
 
 
 # ============================================================
@@ -306,6 +316,8 @@ def _compute_B(df):
 # ============================================================
 
 def _compute_C(df):
+    new_cols = {}
+
     c, h, l, v = df['close'], df['high'], df['low'], df['volume']
 
     ret_1d = df.groupby('ts_code')['close'].pct_change()
@@ -316,24 +328,24 @@ def _compute_C(df):
     ma60 = _roll(df, 'close', 60, 'mean')
 
     # store for reuse by _compute_E
-    df['_ma5'] = ma5
-    df['_ma10'] = ma10
-    df['_ma20'] = ma20
-    df['_ma60'] = ma60
+    new_cols['_ma5'] = ma5
+    new_cols['_ma10'] = ma10
+    new_cols['_ma20'] = ma20
+    new_cols['_ma60'] = ma60
 
     # C1-C4: momentum
     for w, label in [(5, '5d'), (10, '10d'), (20, '20d'), (60, '60d')]:
-        df[f'momentum_{label}'] = c / _shift(df, 'close', w) - 1.0
+        new_cols[f'momentum_{label}'] = c / _shift(df, 'close', w) - 1.0
 
     # C5-C8: MA deviation
-    df['ma_deviation_5'] = c / ma5 - 1.0
-    df['ma_deviation_10'] = c / ma10 - 1.0
-    df['ma_deviation_20'] = c / ma20 - 1.0
-    df['ma_deviation_60'] = c / ma60 - 1.0
+    new_cols['ma_deviation_5'] = c / ma5 - 1.0
+    new_cols['ma_deviation_10'] = c / ma10 - 1.0
+    new_cols['ma_deviation_20'] = c / ma20 - 1.0
+    new_cols['ma_deviation_60'] = c / ma60 - 1.0
 
     # C9-C10: volume ratio
-    df['volume_ratio_5'] = v / _roll(df, 'volume', 5, 'mean')
-    df['volume_ratio_20'] = v / _roll(df, 'volume', 20, 'mean')
+    new_cols['volume_ratio_5'] = v / _roll(df, 'volume', 5, 'mean')
+    new_cols['volume_ratio_20'] = v / _roll(df, 'volume', 20, 'mean')
 
     # C11: RSI 14
     delta = df.groupby('ts_code')['close'].diff()
@@ -342,44 +354,44 @@ def _compute_C(df):
     avg_gain = _roll(df.assign(_gain=gain), '_gain', 14, 'mean')
     avg_loss = _roll(df.assign(_loss=loss), '_loss', 14, 'mean')
     rs = avg_gain / (avg_loss + EPS)
-    df['rsi_14'] = 100.0 - 100.0 / (1.0 + rs)
+    new_cols['rsi_14'] = 100.0 - 100.0 / (1.0 + rs)
 
     # C12-C14: MACD
     ema12 = _ema(df, 'close', 12)
     ema26 = _ema(df, 'close', 26)
-    df['macd_dif'] = ema12 - ema26
-    df['macd_dea'] = _ema(df.assign(_d=df['macd_dif']), '_d', 9)
-    df['macd_hist'] = 2.0 * (df['macd_dif'] - df['macd_dea'])
+    new_cols['macd_dif'] = ema12 - ema26
+    new_cols['macd_dea'] = _ema(df.assign(_d=new_cols['macd_dif']), '_d', 9)
+    new_cols['macd_hist'] = 2.0 * (new_cols['macd_dif'] - new_cols['macd_dea'])
 
     # C15-C16: Bollinger
     std20 = _roll(df, 'close', 20, 'std')
     upper = ma20 + 2.0 * std20
     lower = ma20 - 2.0 * std20
-    df['bollinger_position'] = (c - lower) / (upper - lower + EPS)
-    df['bollinger_width'] = (upper - lower) / (ma20 + EPS)
+    new_cols['bollinger_position'] = (c - lower) / (upper - lower + EPS)
+    new_cols['bollinger_width'] = (upper - lower) / (ma20 + EPS)
 
     # C17-C19: KDJ
     low9 = _roll(df, 'low', 9, 'min')
     high9 = _roll(df, 'high', 9, 'max')
     rsv = (c - low9) / (high9 - low9 + EPS) * 100.0
-    df['kdj_k'] = rsv.groupby(df['ts_code']).transform(
+    new_cols['kdj_k'] = rsv.groupby(df['ts_code']).transform(
         lambda x: x.ewm(alpha=1 / 3, adjust=False).mean()
     )
-    df['kdj_d'] = df['kdj_k'].groupby(df['ts_code']).transform(
+    new_cols['kdj_d'] = new_cols['kdj_k'].groupby(df['ts_code']).transform(
         lambda x: x.ewm(alpha=1 / 3, adjust=False).mean()
     )
-    df['kdj_j'] = 3.0 * df['kdj_k'] - 2.0 * df['kdj_d']
+    new_cols['kdj_j'] = 3.0 * new_cols['kdj_k'] - 2.0 * new_cols['kdj_d']
 
     # C20: OBV (normalized by 20d MA)
     close_diff_sign = np.sign(df.groupby('ts_code')['close'].diff().fillna(0))
     obv_raw = (close_diff_sign * v).groupby(df['ts_code']).cumsum()
     obv_ma20 = _roll(df.assign(_o=obv_raw), '_o', 20, 'mean')
-    df['obv'] = obv_raw / (obv_ma20.abs() + EPS) - 1.0
+    new_cols['obv'] = obv_raw / (obv_ma20.abs() + EPS) - 1.0
 
     # C21: ATR 14 (normalized by close)
     prev_c = _shift(df, 'close', 1)
     tr = pd.concat([(h - l).abs(), (h - prev_c).abs(), (l - prev_c).abs()], axis=1).max(axis=1)
-    df['atr_14'] = _roll(df.assign(_tr=tr), '_tr', 14, 'mean') / (c + EPS)
+    new_cols['atr_14'] = _roll(df.assign(_tr=tr), '_tr', 14, 'mean') / (c + EPS)
 
     # C22: MFI 14
     tp = (h + l + c) / 3.0
@@ -390,65 +402,67 @@ def _compute_C(df):
     pos_sum = _roll(df.assign(_p=pos), '_p', 14, 'sum')
     neg_sum = _roll(df.assign(_n=neg), '_n', 14, 'sum')
     mfr = pos_sum / (neg_sum + EPS)
-    df['mfi_14'] = 100.0 - 100.0 / (1.0 + mfr)
+    new_cols['mfi_14'] = 100.0 - 100.0 / (1.0 + mfr)
 
     # C23: Williams %R 14
     hh14 = _roll(df, 'high', 14, 'max')
     ll14 = _roll(df, 'low', 14, 'min')
-    df['wr_14'] = (hh14 - c) / (hh14 - ll14 + EPS) * -100.0
+    new_cols['wr_14'] = (hh14 - c) / (hh14 - ll14 + EPS) * -100.0
 
     # C24: CCI 20
     tp_cci = (h + l + c) / 3.0
     tp_ma20 = _roll(df.assign(_t=tp_cci), '_t', 20, 'mean')
     tp_md = _roll(df.assign(_mad=(tp_cci - tp_ma20).abs()), '_mad', 20, 'mean')
-    df['cci_20'] = (tp_cci - tp_ma20) / (0.015 * tp_md + EPS)
+    new_cols['cci_20'] = (tp_cci - tp_ma20) / (0.015 * tp_md + EPS)
 
     # C25: ROC 10
-    df['roc_10'] = (c / _shift(df, 'close', 10) - 1.0) * 100.0
+    new_cols['roc_10'] = (c / _shift(df, 'close', 10) - 1.0) * 100.0
 
     # C26: amplitude (avg daily range over 5d)
     amp = (h - l) / c
-    df['amplitude_5'] = _roll(df.assign(_a=amp), '_a', 5, 'mean')
+    new_cols['amplitude_5'] = _roll(df.assign(_a=amp), '_a', 5, 'mean')
 
     # C27: EMA ratio
-    df['ema12_ema26_ratio'] = ema12 / (ema26 + EPS)
+    new_cols['ema12_ema26_ratio'] = ema12 / (ema26 + EPS)
 
     # C28: PPO
-    df['ppo'] = (ema12 - ema26) / (ema26 + EPS) * 100.0
+    new_cols['ppo'] = (ema12 - ema26) / (ema26 + EPS) * 100.0
 
     # C29: Chaikin Money Flow 20
     mfm = ((c - l) - (h - c)) / (h - l + EPS) * v
-    df['cmf_20'] = _roll(df.assign(_m=mfm), '_m', 20, 'sum') / (_roll(df, 'volume', 20, 'sum') + EPS)
+    new_cols['cmf_20'] = _roll(df.assign(_m=mfm), '_m', 20, 'sum') / (_roll(df, 'volume', 20, 'sum') + EPS)
 
     # C30: MA5/MA20 ratio
-    df['ma5_ma20_ratio'] = ma5 / (ma20 + EPS)
+    new_cols['ma5_ma20_ratio'] = ma5 / (ma20 + EPS)
 
     # C31: PVT (Price Volume Trend, normalized)
     pvt_raw = ret_1d * v
     pvt_cum = _roll(df.assign(_pvt_raw=pvt_raw), '_pvt_raw', 20, 'sum')
     pvt_m = _roll(df.assign(_p=pvt_cum), '_p', 20, 'mean')
-    df['pvt'] = pvt_cum / (pvt_m.abs() + EPS)
+    new_cols['pvt'] = pvt_cum / (pvt_m.abs() + EPS)
 
     # C32: Force Index 13 (normalized)
     fi = df.groupby('ts_code')['close'].diff() * v
     fi_ema = fi.groupby(df['ts_code']).transform(lambda x: x.ewm(span=13, adjust=False).mean())
     fi_std = _roll(df.assign(_fe=fi_ema), '_fe', 20, 'std')
-    df['force_index_13'] = fi_ema / (fi_std + EPS)
+    new_cols['force_index_13'] = fi_ema / (fi_std + EPS)
 
     # C33: TRIX 15
     e1 = _ema(df, 'close', 15)
     e2 = _ema(df.assign(_e1=e1), '_e1', 15)
     e3 = _ema(df.assign(_e2=e2), '_e2', 15)
-    df['trix_15'] = e3.groupby(df['ts_code']).pct_change()
+    new_cols['trix_15'] = e3.groupby(df['ts_code']).pct_change()
 
     # C34: DPO 20
     k = 20 // 2 + 1
     dpo_raw = c - _shift(df.assign(_m=ma20), '_m', k)
-    df['dpo_20'] = dpo_raw / (ma20 + EPS)
+    new_cols['dpo_20'] = dpo_raw / (ma20 + EPS)
 
     # C35: PSY 12
     up = (ret_1d > 0).astype(int)
-    df['psy_12'] = _roll(df.assign(_u=up), '_u', 12, 'mean') * 100.0
+    new_cols['psy_12'] = _roll(df.assign(_u=up), '_u', 12, 'mean') * 100.0
+
+    return new_cols
 
 
 # ============================================================
@@ -456,31 +470,35 @@ def _compute_C(df):
 # ============================================================
 
 def _compute_D(df):
+    new_cols = {}
+
     # D1-D2: cross-sectional percentile rank
-    df['pe_percentile_1y'] = df.groupby('date')['pe'].transform(lambda x: x.rank(pct=True))
-    df['pb_percentile_1y'] = df.groupby('date')['pb'].transform(lambda x: x.rank(pct=True))
+    new_cols['pe_percentile_1y'] = df.groupby('date')['pe'].transform(lambda x: x.rank(pct=True))
+    new_cols['pb_percentile_1y'] = df.groupby('date')['pb'].transform(lambda x: x.rank(pct=True))
 
     # D3-D4: log market cap
-    df['log_total_mv'] = np.log(df['total_mv'].clip(lower=EPS))
-    df['log_float_mv'] = np.log(df['float_mv'].clip(lower=EPS))
+    new_cols['log_total_mv'] = np.log(df['total_mv'].clip(lower=EPS))
+    new_cols['log_float_mv'] = np.log(df['float_mv'].clip(lower=EPS))
 
     # D5-D6: rolling turnover
-    df['turnover_5d'] = _roll(df, 'turnover_rate', 5, 'mean')
-    df['turnover_20d'] = _roll(df, 'turnover_rate', 20, 'mean')
+    new_cols['turnover_5d'] = _roll(df, 'turnover_rate', 5, 'mean')
+    new_cols['turnover_20d'] = _roll(df, 'turnover_rate', 20, 'mean')
 
     # D7: volume_ratio preserved from daily_basic (already loaded)
 
     # D8-D9: z-score within date
     pe_m = df.groupby('date')['pe'].transform('mean')
     pe_s = df.groupby('date')['pe'].transform('std')
-    df['pe_zscore'] = (df['pe'] - pe_m) / (pe_s + EPS)
+    new_cols['pe_zscore'] = (df['pe'] - pe_m) / (pe_s + EPS)
     pb_m = df.groupby('date')['pb'].transform('mean')
     pb_s = df.groupby('date')['pb'].transform('std')
-    df['pb_zscore'] = (df['pb'] - pb_m) / (pb_s + EPS)
+    new_cols['pb_zscore'] = (df['pb'] - pb_m) / (pb_s + EPS)
 
     # D10: market cap / average turnover amount
     amt5 = _roll(df, 'amount', 5, 'mean')
-    df['mv_turnover_ratio'] = df['total_mv'] / (amt5 + EPS)
+    new_cols['mv_turnover_ratio'] = df['total_mv'] / (amt5 + EPS)
+
+    return new_cols
 
 
 # ============================================================
@@ -488,6 +506,8 @@ def _compute_D(df):
 # ============================================================
 
 def _compute_E(df):
+    new_cols = {}
+
     c, h, l = df['close'], df['high'], df['low']
 
     ret_1d = df.groupby('ts_code')['close'].pct_change()
@@ -515,43 +535,45 @@ def _compute_E(df):
     di_m = _roll(df.assign(_ndm=ndm), '_ndm', 14, 'mean') / (atr14 + EPS) * 100.0
 
     dx = (di_p - di_m).abs() / (di_p + di_m + EPS) * 100.0
-    df['adx_14'] = _roll(df.assign(_dx=dx), '_dx', 14, 'mean')
-    df['di_plus_14'] = di_p
-    df['di_minus_14'] = di_m
+    new_cols['adx_14'] = _roll(df.assign(_dx=dx), '_dx', 14, 'mean')
+    new_cols['di_plus_14'] = di_p
+    new_cols['di_minus_14'] = di_m
 
     # E4-E5: MA crossover proximity
-    df['ma5_cross_ma20'] = (ma5 - ma20) / (ma20 + EPS)
-    df['ma10_cross_ma60'] = (ma10 - ma60) / (ma60 + EPS)
+    new_cols['ma5_cross_ma20'] = (ma5 - ma20) / (ma20 + EPS)
+    new_cols['ma10_cross_ma60'] = (ma10 - ma60) / (ma60 + EPS)
 
     # E6-E7: price vs 20d high/low
     high20 = _roll(df, 'high', 20, 'max')
     low20 = _roll(df, 'low', 20, 'min')
-    df['price_vs_20d_high'] = (c - high20) / (high20 + EPS)
-    df['price_vs_20d_low'] = (c - low20) / (low20 + EPS)
+    new_cols['price_vs_20d_high'] = (c - high20) / (high20 + EPS)
+    new_cols['price_vs_20d_low'] = (c - low20) / (low20 + EPS)
 
     # E8-E9: consecutive up/down (unsigned)
     streak = _consecutive_signed(df.assign(_r=ret_1d), '_r')
-    df['consecutive_up'] = streak.clip(lower=0)
-    df['consecutive_down'] = (-streak).clip(lower=0)
+    new_cols['consecutive_up'] = streak.clip(lower=0)
+    new_cols['consecutive_down'] = (-streak).clip(lower=0)
 
     # E10: gap ratio
-    df['gap_ratio'] = (df['open'] - prev_c) / (prev_c + EPS)
+    new_cols['gap_ratio'] = (df['open'] - prev_c) / (prev_c + EPS)
 
     # E11: MA20 slope
-    df['ma_slope_20'] = (ma20 - _shift(df.assign(_m=ma20), '_m', 10)) / 10.0
+    new_cols['ma_slope_20'] = (ma20 - _shift(df.assign(_m=ma20), '_m', 10)) / 10.0
 
     # E12-E13: higher high / lower low vs 20d ago
-    df['higher_high_20'] = ((h > _shift(df, 'high', 20)) & (c > _shift(df, 'close', 20))).astype(float)
-    df['lower_low_20'] = ((l < _shift(df, 'low', 20)) & (c < _shift(df, 'close', 20))).astype(float)
+    new_cols['higher_high_20'] = ((h > _shift(df, 'high', 20)) & (c > _shift(df, 'close', 20))).astype(float)
+    new_cols['lower_low_20'] = ((l < _shift(df, 'low', 20)) & (c < _shift(df, 'close', 20))).astype(float)
 
     # E14: inside day
-    df['inside_day'] = ((h <= prev_h) & (l >= prev_l)).astype(float)
+    new_cols['inside_day'] = ((h <= prev_h) & (l >= prev_l)).astype(float)
 
     # E15: NR7 (narrowest range in 7 days)  [numba-accelerated]
     dr = h - l
-    df['nr7'] = dr.groupby(df['ts_code']).transform(
+    new_cols['nr7'] = dr.groupby(df['ts_code']).transform(
         lambda x: pd.Series(_numba_nr7(x.values, 7, 7), index=x.index)
     )
+
+    return new_cols
 
 
 # ============================================================
@@ -559,40 +581,44 @@ def _compute_E(df):
 # ============================================================
 
 def _compute_F(df):
+    new_cols = {}
+
     ret_1d = df.groupby('ts_code')['close'].pct_change()
 
     # F1-F4: historical volatility (annualized)
     for w in [5, 10, 20, 60]:
-        df[f'hist_vol_{w}'] = _roll(df.assign(_r=ret_1d), '_r', w, 'std') * np.sqrt(252)
+        new_cols[f'hist_vol_{w}'] = _roll(df.assign(_r=ret_1d), '_r', w, 'std') * np.sqrt(252)
 
     # F5: downside volatility 20
     neg = ret_1d.clip(upper=0)
-    df['downside_vol_20'] = _roll(df.assign(_n=neg), '_n', 20, 'std') * np.sqrt(252)
+    new_cols['downside_vol_20'] = _roll(df.assign(_n=neg), '_n', 20, 'std') * np.sqrt(252)
 
     # F6-F7: max drawdown  [numba-accelerated]
     for w in [20, 60]:
-        df[f'max_dd_{w}'] = df.groupby('ts_code')['close'].transform(
+        new_cols[f'max_dd_{w}'] = df.groupby('ts_code')['close'].transform(
             lambda x: pd.Series(_numba_max_dd(x.pct_change().fillna(0).values, w, w // 2), index=x.index)
         )
 
     # F8-F9: skewness & kurtosis
-    df['skewness_20'] = _roll(df.assign(_r=ret_1d), '_r', 20, 'skew')
-    df['kurtosis_20'] = _roll(df.assign(_r=ret_1d), '_r', 20, 'kurt')
+    new_cols['skewness_20'] = _roll(df.assign(_r=ret_1d), '_r', 20, 'skew')
+    new_cols['kurtosis_20'] = _roll(df.assign(_r=ret_1d), '_r', 20, 'kurt')
 
     # F10: beta 60 (vs cross-sectional mean return)
     mkt = ret_1d.groupby(df['date']).transform('mean')
     rh = _roll_corr(df.assign(_r=ret_1d, _m=mkt), '_r', '_m', 60)
     ss = _roll(df.assign(_r=ret_1d), '_r', 60, 'std')
     ms = _roll(df.assign(_m=mkt), '_m', 60, 'std')
-    df['beta_60'] = rh * ss / (ms + EPS)
+    new_cols['beta_60'] = rh * ss / (ms + EPS)
 
     # F11: VaR 20 (parametric 95%)
-    df['var_20'] = -1.645 * _roll(df.assign(_r=ret_1d), '_r', 20, 'std')
+    new_cols['var_20'] = -1.645 * _roll(df.assign(_r=ret_1d), '_r', 20, 'std')
 
     # F12: ulcer index 20  [numba-accelerated]
-    df['ulcer_index_20'] = df.groupby('ts_code')['close'].transform(
+    new_cols['ulcer_index_20'] = df.groupby('ts_code')['close'].transform(
         lambda x: pd.Series(_numba_ulcer(x.pct_change().fillna(0).values, 20, 10), index=x.index)
     )
+
+    return new_cols
 
 
 # ============================================================
@@ -600,6 +626,8 @@ def _compute_F(df):
 # ============================================================
 
 def _compute_G(df):
+    new_cols = {}
+
     c, v = df['close'], df['volume']
     ret_1d = df.groupby('ts_code')['close'].pct_change()
     ret_5d = c / _shift(df, 'close', 5) - 1.0
@@ -608,42 +636,44 @@ def _compute_G(df):
 
     # G1: disposition effect (corr between retail sell ratio and past returns)
     sell_r = df['sell_sm_vol'] / (sm_vol + EPS)
-    df['disposition_effect'] = _roll_corr(
+    new_cols['disposition_effect'] = _roll_corr(
         df.assign(_s=sell_r, _r20=ret_20d), '_s', '_r20', 20
     )
 
     # G2: anchoring bias (deviation from 60d high)
     h60 = _roll(df, 'high', 60, 'max')
-    df['anchoring_bias'] = (c - h60) / (h60 + EPS)
+    new_cols['anchoring_bias'] = (c - h60) / (h60 + EPS)
 
     # G3: herding intensity (R² of stock return vs market return)
     mkt = ret_1d.groupby(df['date']).transform('mean')
-    df['herding_intensity'] = _roll_corr(
+    new_cols['herding_intensity'] = _roll_corr(
         df.assign(_r=ret_1d, _m=mkt), '_r', '_m', 20
     ) ** 2
 
     # G4: overreaction (negative of extreme 5d returns → reversal)
     rs = _roll(df.assign(_r=ret_1d), '_r', 20, 'std')
     extreme = ((ret_5d / (rs + EPS)).abs() > 2.0).astype(float)
-    df['overreaction'] = -ret_5d * extreme
+    new_cols['overreaction'] = -ret_5d * extreme
 
     # G5: attention proxy (abnormal volume vs 20d MA)
     vm = _roll(df, 'volume', 20, 'mean')
-    df['attention_proxy'] = v / (vm + EPS) - 1.0
+    new_cols['attention_proxy'] = v / (vm + EPS) - 1.0
 
     # G6: information response speed (negative of return autocorrelation)
     lag = _shift(df.assign(_r=ret_1d), '_r', 1)
     ac = _roll_corr(df.assign(_r=ret_1d, _l=lag), '_r', '_l', 20)
-    df['info_response_speed'] = -ac
+    new_cols['info_response_speed'] = -ac
 
     # G7: retail panic/greed (retail net relative to volatility)
     rn = (df['buy_sm_vol'] - df['sell_sm_vol']) / (sm_vol + EPS)
     rm = _roll(df.assign(_rn=rn), '_rn', 20, 'mean')
     rs2 = _roll(df.assign(_rn=rn), '_rn', 20, 'std')
-    df['retail_panic_greed'] = (rn - rm) / (rs2 + EPS)
+    new_cols['retail_panic_greed'] = (rn - rm) / (rs2 + EPS)
 
     # G8: sentiment momentum (5d change in retail net direction)
-    df['sentiment_momentum'] = rn - _shift(df.assign(_rn=rn), '_rn', 5)
+    new_cols['sentiment_momentum'] = rn - _shift(df.assign(_rn=rn), '_rn', 5)
+
+    return new_cols
 
 
 # ============================================================
@@ -741,25 +771,28 @@ def generate_all_factors(df):
     if 'date' not in df.columns:
         raise KeyError(f'date column lost during factor pipeline. Columns: {list(df.columns[:10])}')
 
-    _compute_A(df)
-    _compute_B(df)
-    _compute_C(df)
-    _compute_D(df)
-    _compute_E(df)
-    _compute_F(df)
-    _compute_G(df)
+    # Build all factor columns via dicts and concat to avoid fragmentation warnings
+    df = pd.concat([df, pd.DataFrame(_compute_A(df), index=df.index)], axis=1)
+    df = pd.concat([df, pd.DataFrame(_compute_B(df), index=df.index)], axis=1)
+    df = pd.concat([df, pd.DataFrame(_compute_C(df), index=df.index)], axis=1)
+    df = pd.concat([df, pd.DataFrame(_compute_D(df), index=df.index)], axis=1)
+    df = pd.concat([df, pd.DataFrame(_compute_E(df), index=df.index)], axis=1)
+    df = pd.concat([df, pd.DataFrame(_compute_F(df), index=df.index)], axis=1)
+    df = pd.concat([df, pd.DataFrame(_compute_G(df), index=df.index)], axis=1)
 
     # Forward returns for IC analysis / ML targets
+    fwd_cols = {}
     for h in [1, 5, 10, 20]:
-        df[f'forward_ret_{h}d'] = df.groupby('ts_code')['close'].transform(
+        fwd_cols[f'forward_ret_{h}d'] = df.groupby('ts_code')['close'].transform(
             lambda x: x.shift(-h) / x - 1.0
         )
+    df = pd.concat([df, pd.DataFrame(fwd_cols, index=df.index)], axis=1)
 
     # Clean up: replace inf, drop internal temp columns
-    df.replace([np.inf, -np.inf], np.nan, inplace=True)
+    df = df.replace([np.inf, -np.inf], np.nan)
     tmp = [c for c in df.columns if c.startswith('_tmp_') or c.startswith('_ma')]
     if tmp:
-        df.drop(columns=tmp, inplace=True)
+        df = df.drop(columns=tmp)
 
     return df
 
