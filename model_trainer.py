@@ -215,23 +215,22 @@ class TriModelTrainer:
         models["lgb"] = self.train_lightgbm(
             X_train, y_train, X_val, y_val, feature_names, group_train, group_val
         )
-        logger.info("✅ LightGBM 训练完成")
+        lgb_iters = getattr(models["lgb"], 'n_iterations_', models["lgb"].n_estimators)
+        logger.info("✅ LightGBM 训练完成, 迭代次数: %d", lgb_iters)
 
         logger.info("训练 XGBoost (reg:squarederror)...")
         models["xgb"] = self.train_xgboost(
             X_train, y_train, X_val, y_val, feature_names
         )
-        logger.info("✅ XGBoost 训练完成")
+        xgb_iters = getattr(models["xgb"], 'best_iteration', models["xgb"].n_estimators)
+        logger.info("✅ XGBoost 训练完成, 迭代次数: %d", xgb_iters)
 
         logger.info("训练 CatBoost (YetiRank)...")
         models["cat"] = self.train_catboost(
             X_train, y_train, X_val, y_val, feature_names, group_train, group_val
         )
-        logger.info("✅ CatBoost 训练完成")
-
-        models["cat"] = self.train_catboost(
-            X_train, y_train, X_val, y_val, feature_names, group_train, group_val
-        )
+        cat_iters = getattr(models["cat"], 'best_iteration_', getattr(models["cat"], 'iteration_count_', 0))
+        logger.info("✅ CatBoost 训练完成, 迭代次数: %d", cat_iters)
 
         return models
 
