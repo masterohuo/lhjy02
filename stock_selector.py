@@ -346,6 +346,7 @@ def select_and_build_portfolio(
     # 3. 特征列选择
     exclude = {
         'ts_code', 'date', 'label', 'future_return', 'target',
+        'pre_close', 'close', 'change', 'pct_chg', 'amount', 'volume',
         'up_limit', 'down_limit', 'open', 'high', 'low',
     }
     meta_cols = [c for c in ['ts_code', 'close', 'up_limit', 'float_mv',

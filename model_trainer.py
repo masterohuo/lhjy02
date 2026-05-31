@@ -52,7 +52,8 @@ class TriModelTrainer:
 
         # Define feature columns (exclude meta, price-only, forward_ret)
         meta_set = {"ts_code", "date", "label"}
-        price_set = {"open", "high", "low", "up_limit", "down_limit"}
+        price_set = {"open", "high", "low", "pre_close", "close", "change",
+                     "pct_chg", "amount", "volume", "up_limit", "down_limit"}
         feature_cols = [c for c in df.columns
                         if c not in meta_set and c not in price_set
                         and not c.startswith('forward_ret_')]
