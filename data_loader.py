@@ -223,6 +223,14 @@ def load_all_tables(ts_codes=None, start_date=None, end_date=None):
 
     conn.close()
 
+    # Apply adj_factor to price columns for backward-adjusted prices
+    if "adj_factor" in df.columns:
+        price_cols = ["open", "high", "low", "close", "pre_close"]
+        valid_mask = df["adj_factor"].notna() & (df["adj_factor"] > 0)
+        for col in price_cols:
+            if col in df.columns:
+                df.loc[valid_mask, col] = df.loc[valid_mask, col] * df.loc[valid_mask, "adj_factor"]
+
     # Parse date to datetime and sort
     df["date"] = _parse_date_column(df["date"])
     df = df.sort_values(["ts_code", "date"]).reset_index(drop=True)
