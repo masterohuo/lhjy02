@@ -2,6 +2,7 @@
 live.py - lhjy02 live trading system for Windows MiniQMT.
 Dual-mode: Live trading on Windows, Research/DryRun on macOS.
 """
+import argparse
 import datetime
 import logging
 import os
@@ -1184,6 +1185,46 @@ def create_trader() -> LiveTrader:
 
 
 def main():
+    parser = argparse.ArgumentParser(description="lhjy02 live trading system")
+    parser.add_argument(
+        "-r", "--rebalance",
+        action="store_true",
+        help="立即执行一次调仓并退出",
+    )
+    parser.add_argument(
+        "-t", "--train",
+        action="store_true",
+        help="立即训练模型并退出",
+    )
+    args = parser.parse_args()
+
+    if args.train:
+        print("")
+        print("=" * 60)
+        print("  手动训练模式")
+        print("=" * 60)
+        try:
+            from model_trainer import TriModelTrainer
+            trainer = TriModelTrainer()
+            models = trainer.train_all()
+            print(f"训练完成! 模型: {list(models.keys())}")
+        except Exception as e:
+            print(f"训练失败: {e}")
+            sys.exit(1)
+        return
+
+    if args.rebalance:
+        trader = create_trader()
+
+        if IS_WINDOWS and _HAS_XTQUANT:
+            if not trader.connect_qmt():
+                trader.logger.warning("QMT 未连接，将以模拟模式执行调仓")
+
+        result = trader.run_rebalance()
+        print(f"\n调仓完成: {result.get('status')}")
+        return
+
+    # Default: daemon mode
     trader = create_trader()
 
     if IS_WINDOWS and _HAS_XTQUANT:
