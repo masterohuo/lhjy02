@@ -62,13 +62,14 @@ LGBM_PARAMS = {
 # XGBoost 参数 (回归预测收益率)
 XGB_PARAMS = {
     "objective": "reg:squarederror",
-    "max_depth": 8,
+    "max_depth": 6,
     "learning_rate": 0.005,
     "n_estimators": 1500,
-    "subsample": 0.8,
-    "colsample_bytree": 0.8,
-    "reg_alpha": 0.1,
-    "reg_lambda": 1.0,
+    "min_child_weight": 100,
+    "subsample": 0.7,
+    "colsample_bytree": 0.7,
+    "reg_alpha": 0.5,
+    "reg_lambda": 2.0,
     "tree_method": "gpu_hist",
     "gpu_id": 0,
 }
@@ -77,9 +78,10 @@ XGB_PARAMS = {
 CAT_PARAMS = {
     "loss_function": "RMSE",
     "iterations": 1500,
-    "depth": 8,
-    "learning_rate": 0.01,
-    "l2_leaf_reg": 5.0,
+    "depth": 6,
+    "learning_rate": 0.005,
+    "l2_leaf_reg": 10.0,
+    "min_data_in_leaf": 100,
     "early_stopping_rounds": 50,
     "task_type": "GPU",
     "devices": "0",
