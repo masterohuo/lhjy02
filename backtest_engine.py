@@ -11,14 +11,15 @@ import numpy as np
 import pandas as pd
 
 from config import (
-    COMMISSION_RATE, INITIAL_CASH, MAX_POS_PCT, MAX_POSITIONS,
-    RESULTS_DIR, SLIPPAGE, STAMP_TAX, STOP_LOSS, TOP_N_STOCKS,
-    TOTAL_POS_PCT, TRAIN_YEARS,
+    ATR_STOP_MULTIPLIER, COMMISSION_RATE, DAILY_MAX_LOSS, INITIAL_CASH,
+    MAX_HOLD_DAYS, MAX_POS_PCT, MAX_POSITIONS, RESULTS_DIR, SLIPPAGE,
+    STAMP_TAX, STOP_LOSS, TOP_N_STOCKS, TOTAL_POS_PCT, TRAILING_STOP,
+    TRAIN_YEARS,
 )
 from data_loader import load_all_tables, load_index_daily
 from factor_system import generate_all_factors
 from model_trainer import TriModelTrainer
-from stock_selector import StockSelector
+from stock_selector import RiskManager, StockSelector
 
 logger = logging.getLogger(__name__)
 
@@ -30,9 +31,12 @@ class BacktestEngine:
         self.cash = float(INITIAL_CASH)
         self.initial_cash = float(INITIAL_CASH)
         self.positions: dict[str, dict] = {}
+        self.position_highs: dict[str, float] = {}
+        self.position_entry_dates: dict[str, pd.Timestamp] = {}
         self.trade_history: list[dict] = []
         self.daily_values: dict[pd.Timestamp, float] = {}
         self.quarterly_windows: list[dict] = []
+        self.risk_manager = RiskManager()
 
     # ------------------------------------------------------------------
     # Core backtest loop
@@ -172,6 +176,10 @@ class BacktestEngine:
             buys = sum(1 for t in window_trades if t["action"] == "BUY")
             sells = sum(1 for t in window_trades if t["action"] == "SELL")
             stops = sum(1 for t in window_trades if t["action"] == "STOP_LOSS")
+            trailing_stops = sum(1 for t in window_trades if t["action"] == "TRAILING_STOP")
+            time_stops = sum(1 for t in window_trades if t["action"] == "TIME_STOP")
+            atr_stops = sum(1 for t in window_trades if t["action"] == "ATR_STOP")
+            daily_loss_stops = sum(1 for t in window_trades if t.get("action") == "DAILY_LOSS_STOP")
 
             # End NAV
             dv_in_window = {d: v for d, v in self.daily_values.items()
@@ -212,6 +220,10 @@ class BacktestEngine:
                 "buys": buys,
                 "sells": sells,
                 "stop_losses": stops,
+                "trailing_stops": trailing_stops,
+                "time_stops": time_stops,
+                "atr_stops": atr_stops,
+                "daily_loss_stops": daily_loss_stops,
                 "turnover": quarterly_turnover,
                 "avg_positions": avg_positions,
             })
@@ -336,6 +348,8 @@ class BacktestEngine:
                     self.positions[ts_code] = {"shares": total_shares, "cost_price": avg_cost}
                 else:
                     self.positions[ts_code] = {"shares": shares, "cost_price": exec_price}
+                    self.position_highs[ts_code] = exec_price
+                    self.position_entry_dates[ts_code] = date
 
                 self.trade_history.append({
                     "date": date, "ts_code": ts_code, "action": "BUY",
@@ -390,41 +404,129 @@ class BacktestEngine:
     # ------------------------------------------------------------------
 
     def _mark_to_market(self, day_data, date):
-        """Daily valuation + stop-loss check on all positions."""
+        """Daily valuation + comprehensive stop-loss checks on all positions.
+
+        Stop-loss priority: daily_loss > trailing > time > atr > hard_stop
+        """
         price_map = dict(zip(day_data["ts_code"], day_data["close"]))
 
-        # Check stop-loss for each position
-        stopped = []
-        for ts_code, pos in list(self.positions.items()):
-            close_price = price_map.get(ts_code, pos["cost_price"])
-            pnl_pct = (close_price - pos["cost_price"]) / pos["cost_price"]
-            if pnl_pct <= STOP_LOSS:
-                stopped.append(ts_code)
+        # Update position highs for trailing stop
+        for ts_code, price in price_map.items():
+            if ts_code in self.positions:
+                prev_high = self.position_highs.get(ts_code, 0)
+                self.position_highs[ts_code] = max(prev_high, price)
 
-        # Execute stop-loss sells
-        for ts_code in stopped:
+        # ---- 1. Daily total loss stop (清仓) ----
+        total = self.cash
+        for ts_code, pos in self.positions.items():
+            price = price_map.get(ts_code, pos["cost_price"])
+            total += pos["shares"] * price
+
+        if self.daily_values:
+            prev_value = list(self.daily_values.values())[-1]
+            if prev_value > 0 and (total - prev_value) / prev_value <= DAILY_MAX_LOSS:
+                # 清仓所有持仓
+                for ts_code in list(self.positions.keys()):
+                    pos = self.positions[ts_code]
+                    close_price = price_map.get(ts_code, pos["cost_price"])
+                    exec_price = close_price * (1.0 - SLIPPAGE)
+                    shares = pos["shares"]
+                    trade_amount = shares * exec_price
+                    commission = trade_amount * COMMISSION_RATE
+                    stamp_tax = trade_amount * STAMP_TAX
+                    proceeds = trade_amount - commission - stamp_tax
+                    self.cash += proceeds
+                    self.trade_history.append({
+                        "date": date, "ts_code": ts_code,
+                        "action": "DAILY_LOSS_STOP",
+                        "shares": shares, "price": exec_price,
+                        "amount": trade_amount,
+                        "commission": commission,
+                        "stamp_tax": stamp_tax,
+                    })
+                    self.position_highs.pop(ts_code, None)
+                    self.position_entry_dates.pop(ts_code, None)
+                    del self.positions[ts_code]
+                # 清仓后重新计算总值
+                total = self.cash
+
+        # ---- 2-5. Per-stock stops ----
+        for ts_code in list(self.positions.keys()):
+            if ts_code not in self.positions:
+                continue
             pos = self.positions[ts_code]
-            close_price = price_map[ts_code]
-            exec_price = close_price * (1.0 - SLIPPAGE)
-            shares = pos["shares"]
-            trade_amount = shares * exec_price
-            commission = trade_amount * COMMISSION_RATE
-            stamp_tax = trade_amount * STAMP_TAX
-            proceeds = trade_amount - commission - stamp_tax
+            close_price = price_map.get(ts_code, pos["cost_price"])
+            if close_price <= 0:
+                continue
 
-            self.cash += proceeds
+            pnl_pct = (close_price - pos["cost_price"]) / pos["cost_price"]
+            action = None
+            sell_fraction = 1.0  # default: sell all
 
-            self.trade_history.append({
-                "date": date, "ts_code": ts_code, "action": "STOP_LOSS",
-                "shares": shares, "price": exec_price,
-                "amount": trade_amount,
-                "commission": commission,
-                "stamp_tax": stamp_tax,
-            })
+            # 2. Trailing stop: from position high
+            pos_high = self.position_highs.get(ts_code, close_price)
+            if pos_high > 0:
+                trail_pct = (close_price - pos_high) / pos_high
+                if trail_pct <= TRAILING_STOP:
+                    action = "TRAILING_STOP"
 
-            del self.positions[ts_code]
+            # 3. Time stop: held too long and losing
+            if action is None:
+                entry_date = self.position_entry_dates.get(ts_code)
+                if entry_date is not None:
+                    hold_days = (date - entry_date).days
+                    if hold_days >= MAX_HOLD_DAYS and pnl_pct < 0:
+                        action = "TIME_STOP"
+                        sell_fraction = 0.5  # sell half
 
-        # Compute total portfolio value
+            # 4. ATR stop
+            if action is None:
+                atr_cols = ['atr14', 'ATR14', 'atr_14', 'atr']
+                atr_col = next((c for c in atr_cols if c in day_data.columns), None)
+                if atr_col is not None:
+                    atr_series = day_data[day_data["ts_code"] == ts_code]
+                    if not atr_series.empty:
+                        atr_val = float(atr_series[atr_col].iloc[0])
+                        if not np.isnan(atr_val) and atr_val > 0:
+                            atr_stop_price = pos["cost_price"] - ATR_STOP_MULTIPLIER * atr_val
+                            if close_price <= atr_stop_price:
+                                action = "ATR_STOP"
+
+            # 5. Hard stop: -8% (lowest priority)
+            if action is None and pnl_pct <= STOP_LOSS:
+                action = "STOP_LOSS"
+
+            # Execute stop if triggered
+            if action is not None:
+                exec_price = close_price * (1.0 - SLIPPAGE)
+                shares = int(pos["shares"] * sell_fraction / 100) * 100
+                if shares <= 0:
+                    continue
+                shares = min(shares, pos["shares"])
+                trade_amount = shares * exec_price
+                commission = trade_amount * COMMISSION_RATE
+                stamp_tax = trade_amount * STAMP_TAX
+                proceeds = trade_amount - commission - stamp_tax
+                self.cash += proceeds
+
+                self.trade_history.append({
+                    "date": date, "ts_code": ts_code, "action": action,
+                    "shares": shares, "price": exec_price,
+                    "amount": trade_amount,
+                    "commission": commission,
+                    "stamp_tax": stamp_tax,
+                })
+
+                if sell_fraction >= 1.0 or pos["shares"] - shares == 0:
+                    # Full sell: remove position
+                    self.position_highs.pop(ts_code, None)
+                    self.position_entry_dates.pop(ts_code, None)
+                    del self.positions[ts_code]
+                else:
+                    # Partial sell (time stop): update shares
+                    pos["shares"] -= shares
+
+        # Recompute total portfolio value
         total = self.cash
         for ts_code, pos in self.positions.items():
             price = price_map.get(ts_code, pos["cost_price"])
@@ -817,20 +919,24 @@ def _print_quarterly_table(results):
         f"{'Window':>6s}  {'Train Start':>10s}  {'Train End':>10s}  "
         f"{'Test Start':>10s}  {'Test End':>10s}  {'Start NAV':>12s}  "
         f"{'End NAV':>12s}  {'Return':>8s}  {'Max DD':>8s}  "
-        f"{'Buys':>5s}  {'Sells':>5s}  {'Stops':>5s}  {'Turnover':>9s}  {'Positions':>9s}"
+        f"{'Buys':>5s}  {'Sells':>5s}  {'Stop':>4s} {'Trail':>5s} {'Time':>5s} {'ATR':>4s} {'Daily':>5s}  {'Turnover':>9s}"
     )
     print(header)
-    print("-" * 130)
+    print("-" * 140)
 
     for w in qw:
         stops = w.get("stop_losses", 0)
+        trail = w.get("trailing_stops", 0)
+        tstop = w.get("time_stops", 0)
+        atrs = w.get("atr_stops", 0)
+        dailys = w.get("daily_loss_stops", 0)
         print(
             f"{w['window']:>6s}  {str(w['train_start']):>10s}  {str(w['train_end']):>10s}  "
             f"{str(w['test_start']):>10s}  {str(w['test_end']):>10s}  "
             f"¥{w['start_nav']:>11,.0f}  ¥{w['end_nav']:>11,.0f}  "
             f"{w['quarterly_return']:>+7.2%}  {w['max_drawdown']:>+7.2%}  "
-            f"{w['buys']:>5d}  {w['sells']:>5d}  {stops:>5d}  "
-            f"{w['turnover']:>8.1%}  {w['avg_positions']:>8.1f}"
+            f"{w['buys']:>5d}  {w['sells']:>5d}  {stops:>4d} {trail:>5d} {tstop:>5d} {atrs:>4d} {dailys:>5d}  "
+            f"{w['turnover']:>8.1%}"
         )
     print("-" * 130)
 

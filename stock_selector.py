@@ -9,8 +9,9 @@ import numpy as np
 import pandas as pd
 
 from config import (
-    INITIAL_CASH, MAX_POS_PCT, MAX_POSITIONS, MODELS_DIR,
-    STOP_LOSS, TOP_N_STOCKS, TOTAL_POS_PCT,
+    ATR_STOP_MULTIPLIER, DAILY_MAX_LOSS, INITIAL_CASH, MAX_HOLD_DAYS,
+    MAX_POS_PCT, MAX_POSITIONS, MODELS_DIR, STOP_LOSS, TOP_N_STOCKS,
+    TOTAL_POS_PCT, TRAILING_STOP,
 )
 
 try:
@@ -49,10 +50,84 @@ class RiskManager:
         return stopped
 
     def check_daily_loss(self, current_value: float, initial_value: float) -> bool:
-        """日内亏损是否超过 -3%。"""
+        """日内亏损是否超过 DAILY_MAX_LOSS。"""
         if initial_value <= 0:
             return False
-        return (current_value - initial_value) / initial_value < -0.03
+        return (current_value - initial_value) / initial_value <= DAILY_MAX_LOSS
+
+    def check_trailing_stop(
+        self, positions: dict, position_highs: dict, price_map: dict
+    ) -> list:
+        """移动止损：从持仓期间最高价回落超过TRAILING_STOP → 卖出。
+
+        Returns 触发移动止损的股票列表。
+        """
+        stopped = []
+        for ts_code in positions:
+            high = position_highs.get(ts_code)
+            current = price_map.get(ts_code)
+            if high and current and high > 0:
+                if (current - high) / high <= TRAILING_STOP:
+                    stopped.append(ts_code)
+        if stopped:
+            logger.warning("移动止损触发: %s", stopped)
+        return stopped
+
+    def check_time_stop(
+        self, positions: dict, entry_dates: dict,
+        current_date, price_map: dict
+    ) -> list:
+        """时间止损：持仓超过MAX_HOLD_DAYS且浮亏 → 减半仓。
+
+        Returns 触发时间止损的股票列表。
+        """
+        stopped = []
+        for ts_code, pos in positions.items():
+            entry_date = entry_dates.get(ts_code)
+            if entry_date is None:
+                continue
+            hold_days = (current_date - entry_date).days
+            if hold_days > MAX_HOLD_DAYS:
+                current_price = price_map.get(ts_code, pos["cost_price"])
+                if current_price > 0 and (
+                    (current_price - pos["cost_price"]) / pos["cost_price"] < 0
+                ):
+                    stopped.append(ts_code)
+        if stopped:
+            logger.warning("时间止损触发: %s", stopped)
+        return stopped
+
+    def check_atr_stop(
+        self, positions: dict, day_data, price_map: dict
+    ) -> list:
+        """ATR波动止损：当前价 <= 成本价 - ATR_STOP_MULTIPLIER × ATR(14)。
+        没有ATR数据时跳过，返回空列表。
+        """
+        # 查找ATR列
+        atr_cols = ['atr14', 'ATR14', 'atr_14', 'atr']
+        atr_col = None
+        for c in atr_cols:
+            if c in day_data.columns:
+                atr_col = c
+                break
+        if atr_col is None:
+            return []
+
+        atr_map = dict(zip(day_data["ts_code"], day_data[atr_col]))
+        stopped = []
+        for ts_code, pos in positions.items():
+            atr_val = atr_map.get(ts_code)
+            if atr_val is None or (isinstance(atr_val, float) and np.isnan(atr_val)):
+                continue
+            if atr_val <= 0:
+                continue
+            stop_price = pos["cost_price"] - ATR_STOP_MULTIPLIER * atr_val
+            current_price = price_map.get(ts_code, pos["cost_price"])
+            if current_price <= stop_price:
+                stopped.append(ts_code)
+        if stopped:
+            logger.warning("ATR止损触发: %s", stopped)
+        return stopped
 
     def validate_positions(self, target_positions: dict) -> tuple:
         """验证目标持仓：单票 ≤20%，总仓位 ≤80%。

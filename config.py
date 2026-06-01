@@ -27,6 +27,18 @@ REBALANCE_FREQ = "W-FRI"      # 每周五调仓
 SLIPPAGE = 0.0001          # 万分之一滑点
 STOP_LOSS = -0.08             # 硬止损 -8%
 TAKE_PROFIT = None            # 不启用固定止盈
+
+# 日内总亏损止损（当日净值相对昨日收盘跌超此比例→清仓所有持仓）
+DAILY_MAX_LOSS = -0.05
+
+# 移动止损（从持仓期间最高价回落超过此比例→卖出）
+TRAILING_STOP = -0.10
+
+# 时间止损（持仓超过此天数且浮动盈亏为负→减半仓）
+MAX_HOLD_DAYS = 20
+
+# ATR波动止损倍数（止损价 = 成本价 - ATR_MULTIPLIER × ATR(14)）
+ATR_STOP_MULTIPLIER = 3.0
 COMMISSION_RATE = 0.0001   # 万分之一佣金
 STAMP_TAX = 0.001
 TOTAL_TRADE_COST = COMMISSION_RATE + STAMP_TAX
