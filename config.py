@@ -46,8 +46,8 @@ VALIDATION_RATIO = 0.2
 LGBM_PARAMS = {
     "objective": "regression",
     "metric": "rmse",
-    "learning_rate": 0.015,
-    "n_estimators": 1500,
+    "learning_rate": 0.012,
+    "n_estimators": 1000,
     "num_leaves": 50,
     "max_depth": 8,
     "min_child_samples": 150,
@@ -64,8 +64,8 @@ LGBM_PARAMS = {
 XGB_PARAMS = {
     "objective": "reg:squarederror",
     "max_depth": 6,
-    "learning_rate": 0.01,
-    "n_estimators": 1500,
+    "learning_rate": 0.015,
+    "n_estimators": 1000,
     "min_child_weight": 100,
     "subsample": 0.7,
     "colsample_bytree": 0.7,
@@ -78,9 +78,9 @@ XGB_PARAMS = {
 # CatBoost 参数 (回归预测收益率)
 CAT_PARAMS = {
     "loss_function": "RMSE",
-    "iterations": 1500,
+    "iterations": 1000,
     "depth": 6,
-    "learning_rate": 0.01,
+    "learning_rate": 0.015,
     "subsample": 0.7,
     "l2_leaf_reg": 10.0,
     "min_data_in_leaf": 200,
