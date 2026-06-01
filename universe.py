@@ -32,12 +32,12 @@ class StockUniverse:
 
     def filter(self, df: pd.DataFrame) -> pd.DataFrame:
         """Main entry: hard_filter -> rank_by_tradability -> optional stratified_sample."""
-        logger.info("Universe filter: %d rows input", len(df))
+        logger.info("股票池过滤: %d行输入", len(df))
         df = self._hard_filter(df)
         df = self._rank_by_tradability(df)
         if self.use_stratified:
             df = self._stratified_sample(df)
-        logger.info("Universe filter: %d rows output", len(df))
+        logger.info("股票池过滤: %d行输出", len(df))
         return df
 
     def _hard_filter(self, df: pd.DataFrame) -> pd.DataFrame:
@@ -59,7 +59,7 @@ class StockUniverse:
                 elif board == 'SZSE':
                     df = df[~df['ts_code'].astype(str).str.startswith('0')]
             n_removed = n_before - len(df)
-            logger.info("Hard filter - boards %s: removed %d, remaining %d",
+            logger.info("硬过滤 - 板块%s: 移除%d, 剩余%d",
                        self.exclude_boards, n_removed, len(df))
 
         # Exclude ST / *ST / PT / N stocks
@@ -68,7 +68,7 @@ class StockUniverse:
             st_mask = df['ts_code'].astype(str).str.startswith(st_keywords)
             df = df[~st_mask]
             n_removed = n0 - len(df)
-            logger.info("Hard filter - ST/N/PT: removed %d, remaining %d", n_removed, len(df))
+            logger.info("硬过滤 - ST/N/PT: 移除%d, 剩余%d", n_removed, len(df))
 
         # Exclude stocks listed < min_list_days
         if 'list_date' in df.columns:
@@ -82,7 +82,7 @@ class StockUniverse:
             valid = days_listed.isna() | (days_listed >= self.min_list_days)
             df = df[valid]
             n_removed = n_before - len(df)
-            logger.info("Hard filter - list_days< %d: removed %d, remaining %d",
+            logger.info("硬过滤 - 上市天数<%d: 移除%d, 剩余%d",
                        self.min_list_days, n_removed, len(df))
 
         # Exclude stocks with daily amount < min_daily_amount
@@ -91,7 +91,7 @@ class StockUniverse:
             valid = df['amount'].isna() | (df['amount'] >= self.min_daily_amount)
             df = df[valid]
             n_removed = n_before - len(df)
-            logger.info("Hard filter - amount<%.0e: removed %d, remaining %d",
+            logger.info("硬过滤 - 成交额<%.0e: 移除%d, 剩余%d",
                        self.min_daily_amount, n_removed, len(df))
 
         # Exclude limit-up/down stocks (cannot trade)
@@ -101,9 +101,9 @@ class StockUniverse:
             limit_down = (df['close'] <= df['down_limit']) & (df['down_limit'] > 0)
             df = df[~(limit_up | limit_down)]
             n_removed = n_before - len(df)
-            logger.info("Hard filter - limit board: removed %d, remaining %d", n_removed, len(df))
+            logger.info("硬过滤 - 涨跌停: 移除%d, 剩余%d", n_removed, len(df))
 
-        logger.info("Hard filter total: %d -> %d (%.1f%%)",
+        logger.info("硬过滤总计: %d -> %d (%.1f%%)",
                    n0, len(df), 100 * len(df) / max(n0, 1))
         return df
 
@@ -121,7 +121,7 @@ class StockUniverse:
         turnover_col = 'turnover_rate' if 'turnover_rate' in df.columns else None
 
         if mv_col is None and turnover_col is None:
-            logger.warning("No market cap or turnover columns; skipping tradability ranking")
+            logger.warning("无市值或换手率列; 跳过可交易性排名")
             return df
 
         has_date = 'date' in df.columns
@@ -165,7 +165,7 @@ class StockUniverse:
             df = df.sort_values('_tradability_score', ascending=False).head(self.top_n)
         df = df.drop(columns=['_tradability_score'])
 
-        logger.info("Tradability ranking: %d -> %d (top_n=%d per date)",
+        logger.info("可交易性排名: %d -> %d (top_n=%d/日)",
                    n0, len(df), self.top_n)
         return df
 
@@ -177,7 +177,7 @@ class StockUniverse:
         If no industry column, fall back to current ranking.
         """
         if 'industry' not in df.columns:
-            logger.warning("No 'industry' column; falling back to tradability ranking")
+            logger.warning("无'industry'列; 回退到可交易性排名")
             return df
 
         mv_col = 'float_mv' if 'float_mv' in df.columns else ('circ_mv' if 'circ_mv' in df.columns else None)
@@ -244,7 +244,7 @@ class StockUniverse:
         result = pd.concat(frames, ignore_index=True)
         result = result.drop(columns=['_tradability_score'], errors='ignore')
 
-        logger.info("Stratified sample: %d -> %d (%d sectors)",
+        logger.info("分层抽样: %d -> %d (%d个行业)",
                    len(df), len(result), len(frames))
         return result
 

@@ -96,7 +96,7 @@ class TriModelTrainer:
             n_before = len(df)
             df = universe.filter(df)
             n_after = len(df)
-            logger.info("Stock universe: %d -> %d (filtered %.1f%%)",
+            logger.info("股票池: %d -> %d (过滤%.1f%%)",
                        n_before, n_after, (1 - n_after / max(n_before, 1)) * 100)
 
         # Build meta from remaining rows' index (post-dropna)

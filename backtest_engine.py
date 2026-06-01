@@ -87,7 +87,7 @@ class BacktestEngine:
                 test_end = end_dt
 
             logger.info(
-                "Window %d/%d: train [%s, %s] test [%s, %s]",
+                "窗口 %d/%d: 训练 [%s, %s] 测试 [%s, %s]",
                 i + 1, len(retrain_dates),
                 train_start.date(), retrain_date.date(),
                 retrain_date.date(), test_end.date(),
@@ -101,7 +101,7 @@ class BacktestEngine:
                     end_date=retrain_date.strftime("%Y%m%d"),
                 )
             except Exception as exc:
-                logger.warning("Training failed for window %d: %s", i + 1, exc)
+                logger.warning("窗口 %d 训练失败: %s", i + 1, exc)
                 continue
 
             # Load test-period data and generate factors once
@@ -111,11 +111,11 @@ class BacktestEngine:
                     end_date=test_end.strftime("%Y%m%d"),
                 )
             except Exception as exc:
-                logger.warning("Data load failed for window %d: %s", i + 1, exc)
+                logger.warning("窗口 %d 数据加载失败: %s", i + 1, exc)
                 continue
 
             if test_df.empty:
-                logger.warning("No test data for window %d, skipping.", i + 1)
+                logger.warning("窗口 %d 无测试数据, 跳过", i + 1)
                 continue
 
             test_df = generate_all_factors(test_df)
@@ -554,7 +554,7 @@ class BacktestEngine:
                 end_date=end_d.strftime("%Y%m%d"),
             )
         except Exception as exc:
-            logger.warning("Failed to load index data: %s", exc)
+            logger.warning("加载指数数据失败: %s", exc)
             return None
 
         if idx_df.empty:

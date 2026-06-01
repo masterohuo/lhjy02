@@ -36,7 +36,7 @@ class RiskManager:
         required = {'ts_code', 'cost_price', 'current_price'}
         missing = required - set(positions_df.columns)
         if missing:
-            logger.warning(f"check_stop_loss: missing columns {missing}")
+            logger.warning(f"止损检查: 缺少列 {missing}")
             return []
 
         pnl = (
@@ -45,7 +45,7 @@ class RiskManager:
         )
         stopped = positions_df.loc[pnl <= STOP_LOSS, 'ts_code'].tolist()
         if stopped:
-            logger.warning(f"Stop loss triggered: {stopped}")
+            logger.warning(f"触发止损: {stopped}")
         return stopped
 
     def check_daily_loss(self, current_value: float, initial_value: float) -> bool:
@@ -60,7 +60,7 @@ class RiskManager:
         Returns (passed: bool, reason: str).
         """
         if not target_positions:
-            return True, "empty positions"
+            return True, "空仓"
 
         weights = list(target_positions.values())
 
@@ -102,11 +102,11 @@ class StockSelector:
                 try:
                     with open(path, 'rb') as f:
                         models[name] = pickle.load(f)
-                    logger.info(f"Loaded {name} model from {path}")
+                    logger.info(f"已加载 {name} 模型: {path}")
                 except Exception as exc:
-                    logger.warning(f"Failed to load {name}: {exc}")
+                    logger.warning(f"加载 {name} 失败: {exc}")
             else:
-                logger.warning(f"Model file not found: {path}")
+                logger.warning(f"模型文件不存在: {path}")
         return models
 
     # ------------------------------------------------------------------
@@ -149,7 +149,7 @@ class StockSelector:
             avail = [f for f in feature_names if f in X.columns]
             missing = [f for f in feature_names if f not in X.columns]
             if missing:
-                logger.warning("Missing %d features, filling with 0", len(missing))
+                logger.warning("缺失 %d 个特征, 用0填充", len(missing))
             X_arr = X[avail].values if avail else X.values
             if missing:
                 X_arr = np.hstack([X_arr, np.zeros((len(X_arr), len(missing)))])
@@ -169,7 +169,7 @@ class StockSelector:
                     raw = np.asarray(model.predict(X_arr)).ravel()
                     results[col] = raw.astype(np.float64)
                 except Exception as exc:
-                    logger.warning(f"{name} predict failed: {exc}")
+                    logger.warning(f"{name} 预测失败: {exc}")
                     results[col] = np.zeros(n_samples, dtype=np.float64)
             else:
                 results[col] = np.zeros(n_samples, dtype=np.float64)
@@ -227,7 +227,7 @@ class StockSelector:
             )
             n_st = st_mask.sum()
             if n_st:
-                logger.info(f"Excluding {n_st} ST/N stocks")
+                logger.info(f"排除 {n_st} 只ST/N股票")
                 df = df[~st_mask]
 
         # 排除涨停（无法买入）
@@ -237,7 +237,7 @@ class StockSelector:
             )
             n_limit = limit_mask.sum()
             if n_limit:
-                logger.info(f"Excluding {n_limit} limit-up stocks")
+                logger.info(f"排除 {n_limit} 只涨停股票")
                 df = df[~limit_mask]
 
         # 排序（得分降序，市值降序处理平局）
@@ -251,7 +251,7 @@ class StockSelector:
 
         selected = df.head(top_n).reset_index(drop=True)
         logger.info(
-            f"Selected {len(selected)} / {len(df)} candidates"
+            f"已选股 {len(selected)} / {len(df)} 只"
         )
         return selected
 
@@ -332,8 +332,8 @@ class StockSelector:
         cash_reserve = total_cash * (1.0 - total_w)
 
         logger.info(
-            f"Portfolio: {n} stocks, weight {total_w:.1%}, "
-            f"cash ¥{cash_reserve:,.0f}, {len(orders)} orders"
+            f"组合: {n}只, 仓位{total_w:.1%}, "
+            f"现金¥{cash_reserve:,.0f}, {len(orders)}笔订单"
         )
 
         return {
@@ -371,11 +371,11 @@ def select_and_build_portfolio(
     if not _has_factors:
         try:
             from factor_system import generate_all_factors  # noqa: F811
-            logger.info("Generating factor features ...")
+            logger.info("生成因子特征 ...")
             df = generate_all_factors(df)
         except ImportError:
             logger.warning(
-                "factor_system not available; using raw columns as features"
+                "因子系统不可用; 使用原始列作为特征"
             )
 
     # 2. 初始化
@@ -407,7 +407,7 @@ def select_and_build_portfolio(
         and pd.api.types.is_numeric_dtype(df[c])
         and not c.startswith('_')
     ]
-    logger.info(f"Using {len(feature_cols)} features for prediction")
+    logger.info(f"使用 {len(feature_cols)} 个特征进行预测")
 
     # 4. 评分
     scores_df = selector.predict_scores(df, feature_cols)
