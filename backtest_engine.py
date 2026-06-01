@@ -409,6 +409,10 @@ class BacktestEngine:
         Stop-loss priority: daily_loss > trailing > time > atr > hard_stop
         """
         price_map = dict(zip(day_data["ts_code"], day_data["close"]))
+        # Pre-build ATR map for fast lookup (avoid DataFrame filtering per stock)
+        atr_map = {}
+        if "atr_14" in day_data.columns:
+            atr_map = dict(zip(day_data["ts_code"], day_data["atr_14"]))
 
         # Update position highs for trailing stop
         for ts_code, price in price_map.items():
@@ -479,18 +483,13 @@ class BacktestEngine:
                         action = "TIME_STOP"
                         sell_fraction = 0.5  # sell half
 
-            # 4. ATR stop
+            # 4. ATR stop (fast dict lookup)
             if action is None:
-                atr_cols = ['atr14', 'ATR14', 'atr_14', 'atr']
-                atr_col = next((c for c in atr_cols if c in day_data.columns), None)
-                if atr_col is not None:
-                    atr_series = day_data[day_data["ts_code"] == ts_code]
-                    if not atr_series.empty:
-                        atr_val = float(atr_series[atr_col].iloc[0])
-                        if not np.isnan(atr_val) and atr_val > 0:
-                            atr_stop_price = pos["cost_price"] - ATR_STOP_MULTIPLIER * atr_val
-                            if close_price <= atr_stop_price:
-                                action = "ATR_STOP"
+                atr_val = atr_map.get(ts_code, 0)
+                if atr_val > 0:
+                    atr_stop_price = pos["cost_price"] - ATR_STOP_MULTIPLIER * atr_val
+                    if close_price <= atr_stop_price:
+                        action = "ATR_STOP"
 
             # 5. Hard stop: -8% (lowest priority)
             if action is None and pnl_pct <= STOP_LOSS:
