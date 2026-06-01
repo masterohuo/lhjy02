@@ -850,25 +850,23 @@ class FactorScreener:
             return pd.Series({c: np.nan for c in factor_cols})
 
         if method == 'spearman':
-            # Rank within each date (pct=False gives integer ranks, faster than pct=True)
+            # Rank within each date once for all factors
             ranked = sub.groupby(self.date_col)[cols].rank()
+            ranked[self.date_col] = sub[self.date_col].values
         else:
-            ranked = sub[cols]
+            ranked = sub[cols].copy()
+            ranked[self.date_col] = sub[self.date_col].values
 
-        # Compute single correlation matrix, then extract factor-target correlations
-        corr_by_date = ranked.groupby(self.date_col).corr()
-        # corr_by_date has MultiIndex (date, col); extract target correlations
-        ic_series = corr_by_date.loc[(slice(None), target_col)]
-        # Drop the target-target correlation, keep factor-target only
-        ic_series = ic_series.drop(target_col, level=1, errors='ignore')
-        # Average across dates
-        mean_ic = ic_series.groupby(level=1).mean()
-        mean_ic.index.name = None
+        # Per-factor IC: correlation with target, averaged across dates
+        # Uses pre-ranked data for efficiency (one rank operation for all factors)
+        ic_results = {}
+        for col in factor_cols:
+            gb = ranked.groupby(self.date_col)[[col, target_col]]
+            ic_by_date = gb.corr().loc[(slice(None), col), target_col]
+            ic_results[col] = ic_by_date.mean()
 
-        # Fill missing factors with NaN
-        result = pd.Series(np.nan, index=factor_cols)
-        result.update(mean_ic)
-        return result.sort_values(ascending=False)
+        result = pd.Series(ic_results).sort_values(ascending=False)
+        return result
 
     def calculate_quantile_returns(self, factor_col, n_quantiles=5):
         """Calculate mean forward return per factor quantile.
