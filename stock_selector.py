@@ -417,33 +417,39 @@ def select_and_build_portfolio(
     # 2. 初始化
     selector = StockSelector(models_dict=models)
 
-    # 3. 特征列选择（排除所有原始数据库字段，仅保留衍生因子）
-    exclude = {
-        # Metadata / label
-        'ts_code', 'date', 'label', 'future_return', 'target',
-        # Raw price/volume (stock_daily)
-        'pre_close', 'close', 'change', 'pct_chg', 'amount', 'volume',
-        'up_limit', 'down_limit', 'open', 'high', 'low',
-        # Raw fundamental/market (stock_daily_basic)
-        'pe', 'pe_ttm', 'pb', 'total_mv', 'float_mv',
-        'turnover_rate', 'volume_ratio',
-        # Raw moneyflow volume (stock_moneyflow)
-        'buy_sm_vol', 'sell_sm_vol', 'buy_md_vol', 'sell_md_vol',
-        'buy_lg_vol', 'sell_lg_vol', 'buy_elg_vol', 'sell_elg_vol',
-        'net_mf_amount',
-        # Non-predictive
-        'adj_factor',
-    }
+    # 3. 特征列选择
+    # 优先使用模型存储的特征名（与训练时一致），确保IC筛选后预测特征对齐
+    model_features = selector._get_model_feature_names()
+    if model_features:
+        feature_cols = [c for c in model_features if c in df.columns]
+        logger.info("使用模型特征 %d 个进行预测 (与训练时对齐)", len(feature_cols))
+    else:
+        exclude = {
+            # Metadata / label
+            'ts_code', 'date', 'label', 'future_return', 'target',
+            # Raw price/volume (stock_daily)
+            'pre_close', 'close', 'change', 'pct_chg', 'amount', 'volume',
+            'up_limit', 'down_limit', 'open', 'high', 'low',
+            # Raw fundamental/market (stock_daily_basic)
+            'pe', 'pe_ttm', 'pb', 'total_mv', 'float_mv',
+            'turnover_rate', 'volume_ratio',
+            # Raw moneyflow volume (stock_moneyflow)
+            'buy_sm_vol', 'sell_sm_vol', 'buy_md_vol', 'sell_md_vol',
+            'buy_lg_vol', 'sell_lg_vol', 'buy_elg_vol', 'sell_elg_vol',
+            'net_mf_amount',
+            # Non-predictive
+            'adj_factor',
+        }
+        feature_cols = [
+            c for c in df.columns
+            if c not in exclude
+            and pd.api.types.is_numeric_dtype(df[c])
+            and not c.startswith('_')
+        ]
+        logger.info(f"使用 %d 个特征进行预测", len(feature_cols))
+
     meta_cols = [c for c in ['ts_code', 'close', 'up_limit', 'float_mv',
                               'total_mv', 'pre_close'] if c in df.columns]
-
-    feature_cols = [
-        c for c in df.columns
-        if c not in exclude
-        and pd.api.types.is_numeric_dtype(df[c])
-        and not c.startswith('_')
-    ]
-    logger.info(f"使用 {len(feature_cols)} 个特征进行预测")
 
     # 4. 评分
     scores_df = selector.predict_scores(df, feature_cols)

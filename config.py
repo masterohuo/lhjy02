@@ -112,6 +112,10 @@ QMT_CONFIG = {
     "account_id": os.environ.get("QMT_ACCOUNT_ID", ""),  # ← 在这里填写你的资金账户
 }
 
+# 因子IC筛选
+ENABLE_IC_FILTER = True       # 是否启用IC筛选
+IC_MIN_ABS = 0.01             # 最小|IC|阈值
+
 # 日志
 LOG_LEVEL = "INFO"
 

@@ -5,6 +5,7 @@ Trains LightGBM (regression), XGBoost (reg:squarederror), and CatBoost (RMSE)
 regression models for stock return prediction and combines them into an ensemble.
 """
 import argparse
+import json
 import logging
 import pickle
 import numpy as np
@@ -16,9 +17,10 @@ from catboost import CatBoostRegressor, Pool
 from config import (
     MODELS_DIR, LGBM_PARAMS, XGB_PARAMS, CAT_PARAMS,
     MAX_STOCKS, PREDICT_HORIZON, UNIVERSE_CONFIG,
+    ENABLE_IC_FILTER, IC_MIN_ABS,
 )
 from data_loader import load_all_tables
-from factor_system import generate_all_factors
+from factor_system import generate_all_factors, FactorScreener, ALL_FACTOR_COLS
 from universe import StockUniverse
 
 logger = logging.getLogger(__name__)
@@ -85,6 +87,27 @@ class TriModelTrainer:
                         and pd.api.types.is_numeric_dtype(df[c])]
 
         self.feature_names_ = feature_cols
+
+        # IC筛选有效因子
+        if ENABLE_IC_FILTER:
+            screener = FactorScreener(df, forward_return_col='forward_ret_5d')
+            all_ic = screener.calculate_ic()
+            effective = screener.filter_effective_factors(min_abs_ic=IC_MIN_ABS)
+
+            # 保存筛选结果
+            all_ic.to_csv(MODELS_DIR / 'factor_ic.csv')
+            with open(MODELS_DIR / 'effective_factors.json', 'w') as f:
+                json.dump(effective, f, indent=2)
+
+            # 只保留有效因子（非因子列不受影响）
+            factor_set = set(ALL_FACTOR_COLS)
+            non_factor = [c for c in feature_cols if c not in factor_set]
+            factor = [c for c in feature_cols if c in factor_set]
+            filtered_factor = [c for c in factor if c in effective]
+            feature_cols = non_factor + filtered_factor
+            self.feature_names_ = feature_cols
+            logger.info("IC筛选: %d/%d 个因子通过 (|IC|>=%.2f)",
+                       len(filtered_factor), len(factor), IC_MIN_ABS)
 
         # Drop NaN across features and label together so X, y stay aligned
         df = df.dropna(subset=feature_cols + ["label"]).copy()

@@ -825,7 +825,7 @@ class FactorScreener:
         self.factor_cols = [c for c in self.factor_cols if c in df.columns]
 
     def calculate_ic(self, method='spearman'):
-        """Calculate mean cross-sectional IC for each factor.
+        """Calculate mean cross-sectional IC for each factor (vectorized).
 
         Computes IC per date (correlation between factor value and forward return),
         then averages across all dates.
@@ -840,23 +840,35 @@ class FactorScreener:
         pd.Series
             Mean IC per factor, sorted descending by absolute value.
         """
-        ic_results = {}
-        target = self.df[self.forward_return_col]
+        target_col = self.forward_return_col
+        factor_cols = [c for c in self.factor_cols if c in self.df.columns]
+        cols = factor_cols + [target_col]
 
-        for col in self.factor_cols:
-            factor = self.df[col]
-            valid = factor.notna() & target.notna()
-            if valid.sum() < 30:
-                ic_results[col] = np.nan
-                continue
+        # Drop rows where any factor or target is NaN (per-group handled separately)
+        sub = self.df[cols + [self.date_col]].dropna()
+        if sub.empty or len(sub) < 30:
+            return pd.Series({c: np.nan for c in factor_cols})
 
-            ic_by_date = self.df.loc[valid].groupby(self.date_col).apply(
-                lambda g: g[col].corr(g[self.forward_return_col], method=method)
-                if len(g) >= 10 else np.nan
-            )
-            ic_results[col] = ic_by_date.mean()
+        if method == 'spearman':
+            # Rank within each date (pct=False gives integer ranks, faster than pct=True)
+            ranked = sub.groupby(self.date_col)[cols].rank()
+        else:
+            ranked = sub[cols]
 
-        return pd.Series(ic_results).sort_values(ascending=False)
+        # Compute single correlation matrix, then extract factor-target correlations
+        corr_by_date = ranked.groupby(self.date_col).corr()
+        # corr_by_date has MultiIndex (date, col); extract target correlations
+        ic_series = corr_by_date.loc[(slice(None), target_col)]
+        # Drop the target-target correlation, keep factor-target only
+        ic_series = ic_series.drop(target_col, level=1, errors='ignore')
+        # Average across dates
+        mean_ic = ic_series.groupby(level=1).mean()
+        mean_ic.index.name = None
+
+        # Fill missing factors with NaN
+        result = pd.Series(np.nan, index=factor_cols)
+        result.update(mean_ic)
+        return result.sort_values(ascending=False)
 
     def calculate_quantile_returns(self, factor_col, n_quantiles=5):
         """Calculate mean forward return per factor quantile.

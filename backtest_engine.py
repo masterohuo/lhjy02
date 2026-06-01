@@ -225,7 +225,8 @@ class BacktestEngine:
     def _do_rebalance(self, day_data, feature_cols, selector, date):
         """Predict scores, select stocks, build portfolio, and execute trades."""
         # Predict ensemble scores from factor data
-        scores = selector.predict_scores(day_data, feature_cols)
+        # Pass None so predict_scores uses model's stored feature names (aligns train/test features)
+        scores = selector.predict_scores(day_data, None)
 
         # Build scored DataFrame with metadata columns
         meta_cols = ["ts_code", "close", "float_mv", "up_limit"]
