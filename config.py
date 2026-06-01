@@ -114,3 +114,19 @@ QMT_CONFIG = {
 
 # 日志
 LOG_LEVEL = "INFO"
+
+# ============================================================
+# Stock Universe Configuration
+# ⚠️ Tushare amount is in 千元 (thousands of CNY).
+#    50_000 = 5000万CNY, 10_000 = 1000万CNY, 100_000 = 1亿CNY
+# ============================================================
+UNIVERSE_CONFIG = {
+    "min_daily_amount": 50_000,       # 5000万日成交额 (in 千元)
+    "min_list_days": 60,
+    "exclude_st": True,
+    "exclude_limit_board": False,     # False during training, True during live selection
+    "exclude_boards": ["STAR", "BSE"],  # 排除科创板(688开头)和北交所(8/4开头)
+    "top_n": 2000,
+    "use_stratified": False,
+    "stratified_min_per_sector": 20,
+}

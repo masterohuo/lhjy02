@@ -37,6 +37,7 @@ _TABLE_COLUMNS = {
     ],
     "adj_factor": ["ts_code", "date", "adj_factor"],
     "stk_limit": ["ts_code", "date", "up_limit", "down_limit"],
+    "stock_basic": ["ts_code", "industry", "list_date"],
 }
 
 
@@ -170,7 +171,7 @@ def _load_table(conn, table, desired_cols, ts_codes=None, start_date=None, end_d
     return df
 
 
-def load_all_tables(ts_codes=None, start_date=None, end_date=None):
+def load_all_tables(ts_codes=None, start_date=None, end_date=None, include_basic_info=False):
     """Load and merge all stock data tables.
 
     Parameters
@@ -181,6 +182,9 @@ def load_all_tables(ts_codes=None, start_date=None, end_date=None):
         Start date (e.g. 20200101, '20200101', '2020-01-01').
     end_date : int, str, or pd.Timestamp, optional
         End date (same formats as start_date).
+    include_basic_info : bool, default False
+        If True, load stock_basic table (ts_code, industry, list_date)
+        and left-join on ts_code.
 
     Returns
     -------
@@ -220,6 +224,15 @@ def load_all_tables(ts_codes=None, start_date=None, end_date=None):
                      ts_codes=ts_codes, start_date=start_date, end_date=end_date)
     if not sl.empty:
         df = df.merge(sl, on=["ts_code", "date"], how="left")
+
+    # 6. stock_basic – optional left join on ts_code (for industry, list_date)
+    if include_basic_info:
+        basic = _load_table(conn, "stock_basic", _TABLE_COLUMNS["stock_basic"])
+        if not basic.empty and 'ts_code' in basic.columns:
+            # Parse list_date from TEXT like '20200101' to datetime
+            if 'list_date' in basic.columns:
+                basic['list_date'] = _parse_date_column(basic['list_date'])
+            df = df.merge(basic, on="ts_code", how="left")
 
     conn.close()
 

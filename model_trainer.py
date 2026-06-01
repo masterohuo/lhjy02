@@ -15,10 +15,11 @@ from catboost import CatBoostRegressor, Pool
 
 from config import (
     MODELS_DIR, LGBM_PARAMS, XGB_PARAMS, CAT_PARAMS,
-    MAX_STOCKS, PREDICT_HORIZON,
+    MAX_STOCKS, PREDICT_HORIZON, UNIVERSE_CONFIG,
 )
 from data_loader import load_all_tables
 from factor_system import generate_all_factors
+from universe import StockUniverse
 
 logger = logging.getLogger(__name__)
 
@@ -30,11 +31,16 @@ class TriModelTrainer:
         self.lgb_model = None
         self.xgb_model = None
         self.cat_model = None
+        self.feature_names_ = None
         MODELS_DIR.mkdir(parents=True, exist_ok=True)
+
+    @property
+    def feature_names(self):
+        return getattr(self, 'feature_names_', None)
 
     def prepare_data(self, start_date=None, end_date=None, max_stocks=2000):
         """Load data, generate factors, create labels, and clean features."""
-        df = load_all_tables(start_date=start_date, end_date=end_date)
+        df = load_all_tables(start_date=start_date, end_date=end_date, include_basic_info=True)
         if df.empty:
             raise ValueError("No data loaded from database.")
 
@@ -66,24 +72,32 @@ class TriModelTrainer:
                          "buy_lg_vol", "sell_lg_vol", "buy_elg_vol", "sell_elg_vol",
                          "net_mf_amount"}
 
-        # Non-predictive raw columns
-        other_set = {"adj_factor"}
+        # Non-predictive raw columns (stock_basic metadata when include_basic_info=True)
+        other_set = {"adj_factor", "industry", "list_date", "name", "area",
+                     "symbol", "cnspell", "market", "act_name", "act_ent_type"}
 
         exclude_set = (meta_set | price_set | fundamental_set | moneyflow_set | other_set)
 
         feature_cols = [c for c in df.columns
                         if c not in exclude_set
                         and not c.startswith('forward_ret_')
-                        and not c.startswith('_')]
+                        and not c.startswith('_')
+                        and pd.api.types.is_numeric_dtype(df[c])]
+
+        self.feature_names_ = feature_cols
 
         # Drop NaN across features and label together so X, y stay aligned
         df = df.dropna(subset=feature_cols + ["label"]).copy()
 
-        # Limit stocks per date
+        # Three-tier funnel stock universe filter
         if max_stocks is not None and max_stocks > 0:
-            df = df.groupby("date", group_keys=False).apply(
-                lambda g: g.head(max_stocks)
-            )
+            uconfig = {**UNIVERSE_CONFIG, "top_n": max_stocks}
+            universe = StockUniverse(**uconfig)
+            n_before = len(df)
+            df = universe.filter(df)
+            n_after = len(df)
+            logger.info("Stock universe: %d -> %d (filtered %.1f%%)",
+                       n_before, n_after, (1 - n_after / max(n_before, 1)) * 100)
 
         # Build meta from remaining rows' index (post-dropna)
         remaining_idx = df.index

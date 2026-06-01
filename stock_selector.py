@@ -112,8 +112,19 @@ class StockSelector:
     # ------------------------------------------------------------------
     # 预测评分
     # ------------------------------------------------------------------
+    def _get_model_feature_names(self) -> list[str] | None:
+        """Try to extract feature names from loaded models."""
+        for model in self.models.values():
+            if model is not None:
+                for attr in ('feature_name_', 'feature_names_in_', 'feature_names_'):
+                    if hasattr(model, attr):
+                        names = getattr(model, attr)
+                        if names is not None and len(names) > 0:
+                            return list(names)
+        return None
+
     def predict_scores(
-        self, X: pd.DataFrame | np.ndarray, feature_names: list[str]
+        self, X: pd.DataFrame | np.ndarray, feature_names: list[str] | None = None
     ) -> pd.DataFrame:
         """三模型预测 → z-score 标准化 → 等权集成。
 
@@ -122,10 +133,28 @@ class StockSelector:
           lgb_zscore, xgb_zscore, cat_zscore,
           ensemble_score
         """
-        # 提取特征矩阵
-        if isinstance(X, pd.DataFrame):
+        # Resolve feature_names: explicit arg > stored > model-inferred > numeric fallback
+        if feature_names is None:
+            if hasattr(self, 'feature_names_') and self.feature_names_:
+                feature_names = self.feature_names_
+            else:
+                feature_names = self._get_model_feature_names()
+        if feature_names is None and isinstance(X, pd.DataFrame):
+            feature_names = [c for c in X.columns
+                           if pd.api.types.is_numeric_dtype(X[c])
+                           and c not in {'ts_code', 'date', 'label'}]
+
+        # Extract aligned feature matrix (fill missing columns with 0)
+        if isinstance(X, pd.DataFrame) and feature_names:
             avail = [f for f in feature_names if f in X.columns]
+            missing = [f for f in feature_names if f not in X.columns]
+            if missing:
+                logger.warning("Missing %d features, filling with 0", len(missing))
             X_arr = X[avail].values if avail else X.values
+            if missing:
+                X_arr = np.hstack([X_arr, np.zeros((len(X_arr), len(missing)))])
+        elif isinstance(X, pd.DataFrame):
+            X_arr = X.values
         else:
             X_arr = np.asarray(X)
 
@@ -175,12 +204,21 @@ class StockSelector:
         df_with_scores: pd.DataFrame,
         top_n: int = TOP_N_STOCKS,
         exclude_st: bool = True,
+        prefilter: bool = True,
     ) -> pd.DataFrame:
         """按 ensemble_score 排名选 top_n 只股票。
 
         自动过滤 ST / *ST / N 股票和涨停股；平局时优先市值更大者。
         """
         df = df_with_scores.copy()
+
+        # 三层漏斗预筛选
+        if prefilter:
+            from universe import StockUniverse
+            from config import UNIVERSE_CONFIG
+            uconfig = {**UNIVERSE_CONFIG, "exclude_limit_board": True, "top_n": len(df)}
+            universe = StockUniverse(**uconfig)
+            df = universe.filter(df)
 
         # 排除 ST / *ST / N
         if exclude_st and 'ts_code' in df.columns:
