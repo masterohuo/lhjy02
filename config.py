@@ -24,10 +24,10 @@ TOTAL_POS_PCT = 0.80          # 总仓位上限 80%
 
 # 交易参数
 REBALANCE_FREQ = "W-FRI"      # 每周五调仓
-SLIPPAGE = 0.002
+SLIPPAGE = 0.0001          # 万分之一滑点
 STOP_LOSS = -0.08             # 硬止损 -8%
 TAKE_PROFIT = None            # 不启用固定止盈
-COMMISSION_RATE = 0.0003
+COMMISSION_RATE = 0.0001   # 万分之一佣金
 STAMP_TAX = 0.001
 TOTAL_TRADE_COST = COMMISSION_RATE + STAMP_TAX
 
@@ -37,7 +37,7 @@ MAX_STOCKS = 2000
 PREDICT_HORIZON = 5
 
 # 训练参数
-TRAIN_YEARS = 5
+TRAIN_YEARS = 5            # 训练数据年数（滚动窗口用3-5年）
 VALIDATION_RATIO = 0.2
 
 # LightGBM 参数 (回归预测收益率)

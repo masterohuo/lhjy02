@@ -12,8 +12,8 @@ import pandas as pd
 
 from config import (
     COMMISSION_RATE, INITIAL_CASH, MAX_POS_PCT, MAX_POSITIONS,
-    RESULTS_DIR, SLIPPAGE, STAMP_TAX, TOP_N_STOCKS, TOTAL_POS_PCT,
-    TRAIN_YEARS,
+    RESULTS_DIR, SLIPPAGE, STAMP_TAX, STOP_LOSS, TOP_N_STOCKS,
+    TOTAL_POS_PCT, TRAIN_YEARS,
 )
 from data_loader import load_all_tables, load_index_daily
 from factor_system import generate_all_factors
@@ -32,16 +32,17 @@ class BacktestEngine:
         self.positions: dict[str, dict] = {}
         self.trade_history: list[dict] = []
         self.daily_values: dict[pd.Timestamp, float] = {}
+        self.quarterly_windows: list[dict] = []
 
     # ------------------------------------------------------------------
     # Core backtest loop
     # ------------------------------------------------------------------
 
     def run_rolling_backtest(self, start_date="2021-01-01", end_date=None,
-                             retrain_freq="M"):
+                             retrain_freq="Q"):
         """Run rolling-window backtest with periodic model retraining.
 
-        For each retrain date (monthly by default):
+        For each retrain date (quarterly by default):
           a. Training data: (retrain_date - TRAIN_YEARS) to retrain_date
           b. Test data: retrain_date to next retrain_date
           c. Train models on training data
@@ -59,12 +60,13 @@ class BacktestEngine:
         end_date : str or None
             Backtest end date (defaults to today).
         retrain_freq : str
-            Retrain frequency pandas offset alias ('M' for monthly).
+            Retrain frequency pandas offset alias ('Q' for quarterly).
 
         Returns
         -------
         dict
-            daily_values (pd.Series), trade_history (pd.DataFrame), metrics (dict).
+            daily_values (pd.Series), trade_history (pd.DataFrame), metrics (dict),
+            quarterly_windows (list[dict]).
         """
         if end_date is None:
             end_date = pd.Timestamp.today().strftime("%Y-%m-%d")
@@ -72,11 +74,15 @@ class BacktestEngine:
         start_dt = pd.Timestamp(start_date)
         end_dt = pd.Timestamp(end_date)
 
-        retrain_dates = pd.date_range(
-            start_dt, end_dt, freq="MS" if retrain_freq == "M" else retrain_freq
-        )
+        # Map frequency aliases: "Q" → "QS", "M" → "MS"
+        _freq_map = {"Q": "QS", "M": "MS"}
+        freq = _freq_map.get(retrain_freq, retrain_freq)
+
+        retrain_dates = pd.date_range(start_dt, end_dt, freq=freq)
         if len(retrain_dates) == 0:
             retrain_dates = pd.DatetimeIndex([start_dt])
+
+        self.quarterly_windows = []
 
         for i, retrain_date in enumerate(retrain_dates):
             train_start = retrain_date - pd.DateOffset(years=TRAIN_YEARS)
@@ -92,6 +98,16 @@ class BacktestEngine:
                 train_start.date(), retrain_date.date(),
                 retrain_date.date(), test_end.date(),
             )
+
+            # Snapshot portfolio value at window start
+            if i == 0:
+                start_nav = self.initial_cash
+            else:
+                dv_sorted = sorted(self.daily_values.items())
+                prev_values = [v for d, v in dv_sorted if d < retrain_date]
+                start_nav = prev_values[-1] if prev_values else self.initial_cash
+
+            trades_before = len(self.trade_history)
 
             # Train models on this window's training data
             try:
@@ -150,6 +166,55 @@ class BacktestEngine:
                     self._do_rebalance(day_data, feature_cols, selector, day)
 
                 self._mark_to_market(day_data, day)
+
+            # Record quarterly window stats
+            window_trades = self.trade_history[trades_before:]
+            buys = sum(1 for t in window_trades if t["action"] == "BUY")
+            sells = sum(1 for t in window_trades if t["action"] == "SELL")
+            stops = sum(1 for t in window_trades if t["action"] == "STOP_LOSS")
+
+            # End NAV
+            dv_in_window = {d: v for d, v in self.daily_values.items()
+                            if d >= retrain_date and d <= test_end}
+            if dv_in_window:
+                end_nav = dv_in_window[max(dv_in_window.keys())]
+            else:
+                end_nav = start_nav
+
+            quarter_ret = (end_nav - start_nav) / start_nav if start_nav > 0 else 0.0
+
+            # Max drawdown within this window
+            window_values = np.array([v for _, v in sorted(dv_in_window.items())]) if dv_in_window else np.array([start_nav])
+            cummax = np.maximum.accumulate(window_values)
+            drawdowns = (window_values - cummax) / cummax
+            quarterly_max_dd = float(np.min(drawdowns))
+
+            # Turnover within window
+            total_traded = sum(t["amount"] for t in window_trades)
+            avg_nav = (start_nav + end_nav) / 2.0 if (start_nav + end_nav) > 0 else 1.0
+            quarterly_turnover = total_traded / avg_nav
+
+            # Average positions held during window
+            avg_positions = float(len(self.positions)) if self.positions else 0.0
+
+            quarter_label = f"Q{i + 1}"
+            self.quarterly_windows.append({
+                "window": quarter_label,
+                "window_index": i + 1,
+                "train_start": train_start.date(),
+                "train_end": retrain_date.date(),
+                "test_start": retrain_date.date(),
+                "test_end": test_end.date(),
+                "start_nav": start_nav,
+                "end_nav": end_nav,
+                "quarterly_return": quarter_ret,
+                "max_drawdown": quarterly_max_dd,
+                "buys": buys,
+                "sells": sells,
+                "stop_losses": stops,
+                "turnover": quarterly_turnover,
+                "avg_positions": avg_positions,
+            })
 
         return self._build_results()
 
@@ -324,9 +389,42 @@ class BacktestEngine:
     # ------------------------------------------------------------------
 
     def _mark_to_market(self, day_data, date):
-        """Record total portfolio value (cash + positions at close) for the day."""
-        total = self.cash
+        """Daily valuation + stop-loss check on all positions."""
         price_map = dict(zip(day_data["ts_code"], day_data["close"]))
+
+        # Check stop-loss for each position
+        stopped = []
+        for ts_code, pos in list(self.positions.items()):
+            close_price = price_map.get(ts_code, pos["cost_price"])
+            pnl_pct = (close_price - pos["cost_price"]) / pos["cost_price"]
+            if pnl_pct <= STOP_LOSS:
+                stopped.append(ts_code)
+
+        # Execute stop-loss sells
+        for ts_code in stopped:
+            pos = self.positions[ts_code]
+            close_price = price_map[ts_code]
+            exec_price = close_price * (1.0 - SLIPPAGE)
+            shares = pos["shares"]
+            trade_amount = shares * exec_price
+            commission = trade_amount * COMMISSION_RATE
+            stamp_tax = trade_amount * STAMP_TAX
+            proceeds = trade_amount - commission - stamp_tax
+
+            self.cash += proceeds
+
+            self.trade_history.append({
+                "date": date, "ts_code": ts_code, "action": "STOP_LOSS",
+                "shares": shares, "price": exec_price,
+                "amount": trade_amount,
+                "commission": commission,
+                "stamp_tax": stamp_tax,
+            })
+
+            del self.positions[ts_code]
+
+        # Compute total portfolio value
+        total = self.cash
         for ts_code, pos in self.positions.items():
             price = price_map.get(ts_code, pos["cost_price"])
             total += pos["shares"] * price
@@ -357,6 +455,8 @@ class BacktestEngine:
             "daily_values": dv,
             "trade_history": th,
             "metrics": self.calculate_metrics(dv, th),
+            "quarterly_windows": self.quarterly_windows,
+            "quarterly_stats": self._calculate_quarterly_stats(),
         }
 
     # ------------------------------------------------------------------
@@ -527,6 +627,49 @@ class BacktestEngine:
         return excess_annual / tracking_err if tracking_err > 1e-10 else 0.0
 
     # ------------------------------------------------------------------
+    # Quarterly statistics
+    # ------------------------------------------------------------------
+
+    def _calculate_quarterly_stats(self):
+        """Compute summary statistics across all quarterly windows.
+
+        Returns
+        -------
+        dict or None
+        """
+        if not self.quarterly_windows:
+            return None
+
+        qw = self.quarterly_windows
+        returns = [w["quarterly_return"] for w in qw]
+        wins = sum(1 for r in returns if r > 0)
+        losses = sum(1 for r in returns if r < 0)
+        avg_ret = float(np.mean(returns)) if returns else 0.0
+
+        best_idx = int(np.argmax(returns))
+        worst_idx = int(np.argmin(returns))
+
+        return {
+            "total_windows": len(qw),
+            "winning_windows": wins,
+            "losing_windows": losses,
+            "win_rate": wins / len(qw) if len(qw) > 0 else 0.0,
+            "avg_quarterly_return": avg_ret,
+            "best_quarter": {
+                "window": qw[best_idx]["window"],
+                "test_start": qw[best_idx]["test_start"],
+                "test_end": qw[best_idx]["test_end"],
+                "return": qw[best_idx]["quarterly_return"],
+            },
+            "worst_quarter": {
+                "window": qw[worst_idx]["window"],
+                "test_start": qw[worst_idx]["test_start"],
+                "test_end": qw[worst_idx]["test_end"],
+                "return": qw[worst_idx]["quarterly_return"],
+            },
+        }
+
+    # ------------------------------------------------------------------
     # Benchmark comparison
     # ------------------------------------------------------------------
 
@@ -589,7 +732,7 @@ def run_backtest(start_date=None, end_date=None, quick=False):
     end_date : str or None
         End date. Defaults to today.
     quick : bool
-        If True, use 1 year of data with monthly retrain for faster iteration.
+        If True, use 1 year of data with quarterly retrain for faster iteration.
     """
     if quick:
         if end_date is None:
@@ -613,7 +756,7 @@ def run_backtest(start_date=None, end_date=None, quick=False):
 
     engine = BacktestEngine()
     results = engine.run_rolling_backtest(
-        start_date=start_date, end_date=end_date, retrain_freq="M"
+        start_date=start_date, end_date=end_date, retrain_freq="Q"
     )
 
     metrics = results.get("metrics", {})
@@ -642,6 +785,9 @@ def run_backtest(start_date=None, end_date=None, quick=False):
     print("═" * 41)
     print()
 
+    # Print quarterly details table
+    _print_quarterly_table(results)
+
     # Save CSV results
     RESULTS_DIR.mkdir(parents=True, exist_ok=True)
     _save_results(results, start_date)
@@ -656,8 +802,60 @@ def run_backtest(start_date=None, end_date=None, quick=False):
 # Output helpers
 # ======================================================================
 
+def _print_quarterly_table(results):
+    """Print per-quarter performance table and summary statistics."""
+    qw = results.get("quarterly_windows")
+    if not qw:
+        return
+
+    print()
+    print("=" * 130)
+    print("  Quarterly Performance Details")
+    print("=" * 130)
+    header = (
+        f"{'Window':>6s}  {'Train Start':>10s}  {'Train End':>10s}  "
+        f"{'Test Start':>10s}  {'Test End':>10s}  {'Start NAV':>12s}  "
+        f"{'End NAV':>12s}  {'Return':>8s}  {'Max DD':>8s}  "
+        f"{'Buys':>5s}  {'Sells':>5s}  {'Stops':>5s}  {'Turnover':>9s}  {'Positions':>9s}"
+    )
+    print(header)
+    print("-" * 130)
+
+    for w in qw:
+        stops = w.get("stop_losses", 0)
+        print(
+            f"{w['window']:>6s}  {str(w['train_start']):>10s}  {str(w['train_end']):>10s}  "
+            f"{str(w['test_start']):>10s}  {str(w['test_end']):>10s}  "
+            f"¥{w['start_nav']:>11,.0f}  ¥{w['end_nav']:>11,.0f}  "
+            f"{w['quarterly_return']:>+7.2%}  {w['max_drawdown']:>+7.2%}  "
+            f"{w['buys']:>5d}  {w['sells']:>5d}  {stops:>5d}  "
+            f"{w['turnover']:>8.1%}  {w['avg_positions']:>8.1f}"
+        )
+    print("-" * 130)
+
+    # Summary statistics
+    qs = results.get("quarterly_stats")
+    if qs is None:
+        return
+
+    print()
+    print("=" * 60)
+    print("  Quarterly Summary Statistics")
+    print("=" * 60)
+    print(f"  Total Windows     : {qs['total_windows']}")
+    print(f"  Winning / Losing  : {qs['winning_windows']} / {qs['losing_windows']}")
+    print(f"  Quarterly Win Rate: {qs['win_rate'] * 100:.1f}%")
+    print(f"  Avg Qtr Return    : {qs['avg_quarterly_return'] * 100:+.2f}%")
+    best = qs["best_quarter"]
+    print(f"  Best Quarter      : {best['window']} ({best['test_start']} ~ {best['test_end']})  {best['return'] * 100:+.2f}%")
+    worst = qs["worst_quarter"]
+    print(f"  Worst Quarter     : {worst['window']} ({worst['test_start']} ~ {worst['test_end']})  {worst['return'] * 100:+.2f}%")
+    print("=" * 60)
+    print()
+
+
 def _save_results(results, start_date):
-    """Save daily values and trade history to timestamped CSV files."""
+    """Save daily values, trade history and quarterly details to timestamped CSV files."""
     stamp = pd.Timestamp.now().strftime("%Y%m%d_%H%M%S")
     tag = start_date.replace("-", "") if start_date else "full"
 
@@ -674,6 +872,13 @@ def _save_results(results, start_date):
         path = RESULTS_DIR / f"backtest_trades_{tag}_{stamp}.csv"
         th.to_csv(path, index=False)
         print(f"[save] Trade history -> {path}")
+
+    qw = results.get("quarterly_windows")
+    if qw:
+        qw_df = pd.DataFrame(qw)
+        path = RESULTS_DIR / f"quarterly_details_{stamp}.csv"
+        qw_df.to_csv(path, index=False)
+        print(f"[save] Quarterly details -> {path}")
 
 
 def _plot_equity_curve(results, engine):
@@ -755,4 +960,4 @@ if __name__ == "__main__":
         level=logging.INFO,
         format="%(asctime)s [%(levelname)s] %(message)s",
     )
-    run_backtest(quick=True)
+    run_backtest(quick=False)

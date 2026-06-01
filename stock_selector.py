@@ -194,6 +194,27 @@ class StockSelector:
         zcols = ['lgb_zscore', 'xgb_zscore', 'cat_zscore']
         scores_df['ensemble_score'] = scores_df[zcols].mean(axis=1)
 
+        # 三模型共识加权
+        # 1. 每个模型独立排名（百分位，越小越好）
+        for name in ('lgb', 'xgb', 'cat'):
+            col = f'{name}_score'
+            scores_df[f'{name}_rank'] = scores_df[col].rank(ascending=False, pct=True)
+
+        # 2. 统计每个股票在几个模型的前20%
+        top20_threshold = 0.20
+        in_top20 = (
+            (scores_df['lgb_rank'] <= top20_threshold).astype(int)
+            + (scores_df['xgb_rank'] <= top20_threshold).astype(int)
+            + (scores_df['cat_rank'] <= top20_threshold).astype(int)
+        )
+
+        # 3. 共识权重映射: 3模型→1.5, 2模型→1.2, 1模型→0.8, 0模型→0.6
+        consensus_map = {3: 1.5, 2: 1.2, 1: 0.8, 0: 0.6}
+        scores_df['consensus_weight'] = in_top20.map(consensus_map)
+
+        # 4. 最终得分 = 集成得分 × 共识权重
+        scores_df['final_score'] = scores_df['ensemble_score'] * scores_df['consensus_weight']
+
         return scores_df
 
     # ------------------------------------------------------------------
@@ -240,8 +261,13 @@ class StockSelector:
                 logger.info(f"排除 {n_limit} 只涨停股票")
                 df = df[~limit_mask]
 
-        # 排序（得分降序，市值降序处理平局）
-        sort_cols = ['ensemble_score']
+        # 排序（final_score优先，得分降序，市值降序处理平局）
+        if 'final_score' in df.columns:
+            score_col = 'final_score'
+        else:
+            score_col = 'ensemble_score'
+
+        sort_cols = [score_col]
         ascending = [False]
         if 'float_mv' in df.columns:
             sort_cols.append('float_mv')
@@ -293,21 +319,31 @@ class StockSelector:
                 'cash_reserve': total_cash,
             }
 
-        # 等权 + 单票上限
+        # 等权 + 共识仓位上限
         equal_w = 1.0 / n
-        capped_w = min(equal_w, MAX_POS_PCT)
-        total_w = capped_w * n
+
+        # 共识仓位映射: 三模型共识→25%, 两模型→20%, 单模型→15%, 无共识→10%
+        consensus_caps = {1.5: 0.25, 1.2: 0.20, 0.8: 0.15, 0.6: 0.10}
+        has_consensus = 'consensus_weight' in selected_stocks_df.columns
+
+        # 每只股票的目标权重（等权基础 + 共识上限裁剪）
+        target_weights: dict[str, float] = {}
+        for _, row in selected_stocks_df.iterrows():
+            ts = row['ts_code']
+            if has_consensus:
+                cw = float(row.get('consensus_weight', 1.0))
+                cap = consensus_caps.get(cw, MAX_POS_PCT)
+            else:
+                cap = MAX_POS_PCT
+            target_weights[ts] = min(equal_w, cap)
+
+        total_w = sum(target_weights.values())
 
         # 总仓位超限则等比例缩减
         if total_w > TOTAL_POS_PCT:
             scale = TOTAL_POS_PCT / total_w
-            capped_w *= scale
+            target_weights = {k: v * scale for k, v in target_weights.items()}
             total_w = TOTAL_POS_PCT
-
-        # 目标权重
-        target_weights: dict[str, float] = {}
-        for _, row in selected_stocks_df.iterrows():
-            target_weights[row['ts_code']] = capped_w
 
         # 生成订单
         orders: list[tuple] = []
@@ -315,19 +351,19 @@ class StockSelector:
         current_set = set(current_positions)
 
         for ts_code in target_set - current_set:
-            value = total_cash * capped_w
-            orders.append((ts_code, 'BUY', capped_w, value))
+            tw = target_weights[ts_code]
+            orders.append((ts_code, 'BUY', tw, total_cash * tw))
 
         for ts_code in current_set - target_set:
             orders.append((ts_code, 'SELL', 0.0, 0.0))
 
         for ts_code in target_set & current_set:
+            tw = target_weights[ts_code]
             cur_w = current_positions[ts_code].get('weight', 0)
-            diff = abs(capped_w - cur_w)
-            if diff > 0.005:  # 0.5% 以上差异才调整
-                value = total_cash * capped_w
-                action = 'BUY' if capped_w > cur_w else 'SELL'
-                orders.append((ts_code, action, capped_w, value))
+            diff = abs(tw - cur_w)
+            if diff > 0.005:
+                action = 'BUY' if tw > cur_w else 'SELL'
+                orders.append((ts_code, action, tw, total_cash * tw))
 
         cash_reserve = total_cash * (1.0 - total_w)
 
