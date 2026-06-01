@@ -173,8 +173,8 @@ class TriModelTrainer:
                 eval_set=[(X_val[feature_names], y_val)],
                 verbose=False,
             )
-        except Exception:
-            logger.info("XGBoost GPU不可用，回退到CPU (hist)...")
+        except Exception as e:
+            logger.info("XGBoost GPU不可用(%s)，回退到CPU (hist)...", type(e).__name__)
             cpu_params = self._cpu_params(params, {"tree_method", "gpu_id"})
             cpu_params["tree_method"] = "hist"
             self.xgb_model = XGBRegressor(**cpu_params, n_estimators=n_estimators,
@@ -208,8 +208,8 @@ class TriModelTrainer:
                 early_stopping_rounds=early_stopping_rounds,
                 verbose=False,
             )
-        except Exception:
-            logger.info("CatBoost GPU不可用，回退到CPU...")
+        except Exception as e:
+            logger.info("CatBoost GPU不可用(%s)，回退到CPU...", type(e).__name__)
             cpu_params = self._cpu_params(params, {"task_type", "devices"})
             self.cat_model = CatBoostRegressor(**cpu_params, iterations=iterations, verbose=0)
             self.cat_model.fit(

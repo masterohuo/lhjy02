@@ -78,12 +78,12 @@ XGB_PARAMS = {
 # CatBoost 参数 (回归预测收益率)
 CAT_PARAMS = {
     "loss_function": "RMSE",
-    "iterations": 1000,
-    "depth": 5,
-    "learning_rate": 0.015,
-    "subsample": 0.6,
-    "l2_leaf_reg": 25.0,
-    "min_data_in_leaf": 500,
+    "iterations": 1500,
+    "depth": 6,
+    "learning_rate": 0.01,
+    "subsample": 0.7,
+    "l2_leaf_reg": 10.0,
+    "min_data_in_leaf": 200,
     "early_stopping_rounds": 50,
     "task_type": "GPU",
     "devices": "0",

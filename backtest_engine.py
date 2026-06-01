@@ -101,7 +101,7 @@ class BacktestEngine:
                     end_date=retrain_date.strftime("%Y%m%d"),
                 )
             except Exception as exc:
-                logger.warning("窗口 %d 训练失败: %s", i + 1, exc)
+                logger.error("窗口 %d 训练失败: %s", i + 1, exc, exc_info=True)
                 continue
 
             # Load test-period data and generate factors once
